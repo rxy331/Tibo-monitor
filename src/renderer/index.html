@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none';" />
+    <title>Tibo Monitor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-icon" src="../../assets/app-icon.png" alt="Tibo Monitor" />
+          <div>
+            <div class="brand-name">Tibo Monitor</div>
+            <div class="brand-caption">RESET SIGNAL DESK</div>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-item active" data-page="overview"><span>⌁</span>概览</button>
+          <button class="nav-item" data-page="activity"><span>◫</span>动态</button>
+          <button class="nav-item" data-page="alerts"><span>◉</span>预警历史</button>
+          <button class="nav-item" data-page="settings"><span>⚙</span>设置</button>
+          <button class="nav-item" data-page="about"><span>ⓘ</span>关于</button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="connection-pill">
+            <span id="side-status-dot" class="status-dot paused"></span>
+            <span id="side-status-text">等待配置</span>
+          </div>
+          <div class="local-note">数据仅保存在本机“文档”目录</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <div id="page-eyebrow" class="eyebrow">MONITORING OVERVIEW</div>
+            <h1 id="page-title">监控概览</h1>
+          </div>
+          <div class="top-actions">
+            <div class="last-check">
+              <span>上次检查</span>
+              <strong id="top-last-check">尚未检查</strong>
+            </div>
+            <button id="monitor-toggle" class="toggle-button paused">
+              <span class="toggle-indicator"></span>
+              <span id="monitor-toggle-label">开始监控</span>
+            </button>
+          </div>
+        </header>
+
+        <section id="page-overview" class="page active">
+          <article class="hero-card">
+            <div class="hero-copy">
+              <div class="hero-badge"><span id="hero-dot" class="status-dot paused"></span><span id="hero-state">监控已暂停</span></div>
+              <h2 id="hero-title">准备好监听 Tibo 的下一次信号</h2>
+              <p id="hero-message">完成连接测试后开启监控。首次检查只建立基线，不会为历史动态发送邮件。</p>
+              <div class="hero-actions">
+                <button id="check-now" class="button primary">立即检查</button>
+                <button id="quick-test-x" class="button ghost">测试 X</button>
+                <button id="quick-test-ai" class="button ghost">测试 AI</button>
+              </div>
+              <div class="overview-test-grid" aria-label="连接测试状态">
+                <div id="overview-x-test-status" class="test-status compact" data-state="idle" aria-live="polite">
+                  <span class="test-status-dot"></span><div><b id="overview-x-test-status-title">X 尚未测试</b><p id="overview-x-test-status-message">测试结果会保留在这里。</p></div>
+                </div>
+                <div id="overview-ai-test-status" class="test-status compact" data-state="idle" aria-live="polite">
+                  <span class="test-status-dot"></span><div><b id="overview-ai-test-status-title">DeepSeek 尚未测试</b><p id="overview-ai-test-status-message">测试结果会保留在这里。</p></div>
+                </div>
+              </div>
+              <div class="poll-result-strip" aria-live="polite">
+                <div class="poll-result-copy"><span>最近轮询</span><b id="poll-result-message">尚未产生轮询结果</b></div>
+                <div class="poll-result-metrics">
+                  <span><b id="poll-fresh-count">0</b>新帖</span>
+                  <span><b id="poll-event-count">0</b>新信号</span>
+                  <span><b id="poll-retried-count">0</b>历史重试</span>
+                  <span><b id="poll-sent-count">0</b>已发送</span>
+                </div>
+              </div>
+            </div>
+            <div class="radar-wrap" aria-hidden="true">
+              <div class="radar-ring ring-1"></div>
+              <div class="radar-ring ring-2"></div>
+              <div class="radar-sweep"></div>
+              <img src="../../assets/app-icon.png" alt="" />
+              <span class="radar-ping"></span>
+            </div>
+          </article>
+
+          <div class="metric-grid">
+            <article class="metric-card">
+              <span class="metric-label">目标账号</span>
+              <strong id="metric-handle">@thsottiaux</strong>
+              <small>XActions 只读轮询</small>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">下次检查</span>
+              <strong id="metric-next">—</strong>
+              <small id="metric-interval">每 5 分钟</small>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">已识别动态</span>
+              <strong id="metric-posts">0</strong>
+              <small>仅统计基线后的新帖</small>
+            </article>
+            <article class="metric-card accent">
+              <span class="metric-label">重置周期状态</span>
+              <strong id="metric-cycle">未发现</strong>
+              <small id="metric-events">0 条相关信号</small>
+            </article>
+          </div>
+
+          <div class="two-column">
+            <article class="panel">
+              <div class="panel-head">
+                <div><span class="section-kicker">LIVE FEED</span><h3>最近动态</h3></div>
+                <button class="text-button" data-go="activity">查看全部 →</button>
+              </div>
+              <div id="recent-posts" class="timeline empty-state">尚无基线后的新动态</div>
+            </article>
+            <article class="panel lifecycle-panel">
+              <div class="panel-head">
+                <div><span class="section-kicker">RESET LIFECYCLE</span><h3>事件状态</h3></div>
+              </div>
+              <div class="lifecycle-track">
+                <div class="life-node" data-life="idle"><span>1</span><b>监听中</b><small>等待信号</small></div>
+                <div class="life-line"></div>
+                <div class="life-node" data-life="planned"><span>2</span><b>已预告</b><small>准备重置</small></div>
+                <div class="life-line"></div>
+                <div class="life-node" data-life="completed"><span>3</span><b>已完成</b><small>额度已重置</small></div>
+              </div>
+              <div id="latest-event" class="event-summary empty-state">尚未检测到额度重置信号</div>
+            </article>
+          </div>
+        </section>
+
+        <section id="page-activity" class="page">
+          <article class="panel full-panel">
+            <div class="panel-head">
+              <div><span class="section-kicker">POST ANALYSIS</span><h3>动态与 AI 判断</h3></div>
+              <button id="activity-refresh" class="button ghost small">立即检查</button>
+            </div>
+            <div id="activity-list" class="feed-list empty-state">尚无基线后的新动态</div>
+            <div id="activity-audit-summary" class="audit-summary" hidden></div>
+          </article>
+        </section>
+
+        <section id="page-alerts" class="page">
+          <article class="panel full-panel">
+            <div class="panel-head">
+              <div><span class="section-kicker">NOTIFICATION HISTORY</span><h3>预警与邮件状态</h3></div>
+              <span id="alert-count" class="count-badge">0 条</span>
+            </div>
+            <div id="alerts-list" class="alert-list empty-state">暂时没有预警事件</div>
+            <div id="alerts-audit-summary" class="audit-summary" hidden></div>
+          </article>
+        </section>
+
+        <section id="page-settings" class="page">
+          <form id="settings-form" autocomplete="off">
+            <div class="settings-grid">
+              <article id="x-settings-card" class="settings-card">
+                <div class="settings-title"><span class="settings-icon cyan">⌁</span><div><h3>X 监控</h3><p>仅使用 Mozilla Firefox 的现有登录资料</p></div></div>
+                <div class="form-grid monitor-grid">
+                  <label><span>账号</span><div class="input-prefix"><b>@</b><input id="x-handle" type="text" maxlength="15" /></div></label>
+                  <label><span>轮询间隔（分钟）</span><input id="poll-interval" type="number" min="5" max="30" /></label>
+                  <label><span>每次读取条数</span><input id="fetch-limit" type="number" min="5" max="100" /></label>
+                </div>
+                <p class="reply-policy-note">回复与纯转推始终排除，只分析 Tibo 本人原创帖。每轮只分析最近30分钟原创帖。</p>
+
+                <div class="risk-box prominent">
+                  <label class="checkbox-label strong"><input id="accept-risk" type="checkbox" /><span>我了解 XActions 属于网页抓取，可能遇到登录墙、页面变化或账号限制</span></label>
+                  <p>必须先勾选此项，才能测试登录或打开 Firefox；建议保持低频只读使用。</p>
+                </div>
+
+                <section id="browser-profile-panel" class="profile-panel">
+                  <div class="profile-panel-head">
+                    <div><b>自动使用现有 Firefox 资料</b><p>测试时会在后台依次验证所有资料，成功后自动记住；无需手动选择。</p></div>
+                    <span class="recommended-chip">AUTO</span>
+                  </div>
+                  <div class="profile-picker">
+                    <div class="browser-path-picker">
+                      <label><span>Firefox 程序路径（自动检测失败时选择）</span><input id="firefox-executable" type="text" readonly placeholder="留空则从系统自动检测 firefox.exe" /></label>
+                      <button id="choose-firefox-executable" type="button" class="button ghost small">选择 Firefox EXE…</button>
+                      <button id="clear-firefox-executable" type="button" class="button ghost small">清除</button>
+                    </div>
+                    <button id="refresh-firefox-profiles" type="button" class="button ghost small">重新检测</button>
+                  </div>
+                  <p id="browser-profile-hint" class="profile-hint">正在查找 Firefox 的现有登录资料…</p>
+                  <div id="risk-required-hint" class="risk-required-hint" role="alert">请先勾选上方“我了解”确认项，才能测试 X 登录与读取。</div>
+                  <div class="card-actions profile-actions">
+                    <button id="test-x" type="button" class="button primary small">测试登录与读取</button>
+                    <button id="open-x-login" type="button" class="button ghost small">打开 Firefox 登录 X</button>
+                  </div>
+                  <div class="profile-lock-note">
+                    <span>✓</span><div><b>只读取现有资料，不改写日常 Firefox</b><p>监控时复制必要资料到系统临时目录，完成后立即删除；无需在软件中再次登录。</p></div>
+                  </div>
+                  <p class="privacy-note">如果 Firefox 正在写入资料导致复制失败，请关闭 Firefox 后重试。本软件不支持 Chrome、Edge 或其他 X 数据源。</p>
+                </section>
+
+                <div id="x-test-status" class="test-status" data-state="idle" aria-live="polite">
+                  <span class="test-status-dot"></span><div><b id="x-test-status-title">等待测试 Firefox 登录</b><p id="x-test-status-message">关闭普通 Firefox 后测试；结果会同步保留在概览页。</p></div>
+                </div>
+              </article>
+
+              <article class="settings-card">
+                <div class="settings-title"><span class="settings-icon violet">✦</span><div><h3>DeepSeek 判断</h3><p>兼容 OpenAI Chat Completions 的可编辑配置</p></div></div>
+                <label><span>API URL</span><input id="ai-url" type="url" /></label>
+                <div class="form-grid two">
+                  <label><span>模型名称</span><input id="ai-model" type="text" /></label>
+                  <label><span>API Key</span><input id="ai-key" type="password" placeholder="留空则保留已保存密钥" /></label>
+                  <label><span>预告阈值</span><input id="threshold-announced" type="number" min="0.5" max="1" step="0.01" /></label>
+                  <label><span>完成阈值</span><input id="threshold-completed" type="number" min="0.5" max="1" step="0.01" /></label>
+                </div>
+                <label class="checkbox-label"><input id="thinking-enabled" type="checkbox" /><span>启用思考模式（分类通常无需开启）</span></label>
+                <div class="secret-state"><span id="ai-secret-dot" class="mini-dot"></span><span id="ai-secret-text">尚未保存密钥</span></div>
+                <div id="ai-test-status" class="test-status compact" data-state="idle" aria-live="polite"><span class="test-status-dot"></span><div><b id="ai-test-status-title">DeepSeek 尚未测试</b><p id="ai-test-status-message">测试后会在这里保留模型与判断结果。</p></div></div>
+                <div class="card-actions"><button id="test-ai" type="button" class="button ghost small">测试 DeepSeek</button></div>
+              </article>
+
+              <article class="settings-card wide">
+                <div class="settings-title"><span class="settings-icon green">✉</span><div><h3>QQ 邮件通知</h3><p>使用授权码连接 SMTP；密码由 Windows DPAPI 加密</p></div></div>
+                <div class="form-grid four">
+                  <label><span>SMTP 主机</span><input id="smtp-host" type="text" /></label>
+                  <label><span>端口</span><input id="smtp-port" type="number" min="1" max="65535" /></label>
+                  <label><span>发件邮箱</span><input id="smtp-user" type="email" /></label>
+                  <label><span>授权码</span><input id="smtp-password" type="password" placeholder="留空则保留已保存授权码" /></label>
+                  <div class="span-two recipient-editor">
+                    <span>收件邮箱列表</span>
+                    <div class="recipient-add-row"><input id="smtp-recipient-input" type="email" placeholder="输入邮箱地址" /><button id="add-smtp-recipient" type="button" class="button ghost small">添加</button></div>
+                    <div id="smtp-recipient-list" class="recipient-list" aria-live="polite"></div>
+                    <p id="smtp-recipient-hint" class="profile-hint">至少添加一个收件邮箱；可以逐个删除。</p>
+                  </div>
+                  <label class="checkbox-label"><input id="smtp-secure" type="checkbox" /><span>SSL/TLS（QQ 465 端口）</span></label>
+                  <label class="checkbox-label"><input id="mail-enabled" type="checkbox" /><span>启用邮件通知</span></label>
+                </div>
+                <div class="secret-state"><span id="mail-secret-dot" class="mini-dot"></span><span id="mail-secret-text">尚未保存授权码</span></div>
+                <div id="mail-test-status" class="test-status compact" data-state="idle" aria-live="polite"><span class="test-status-dot"></span><div><b id="mail-test-status-title">QQ SMTP 尚未测试</b><p id="mail-test-status-message">测试会向已填写的收件邮箱发送一封配置确认邮件。</p></div></div>
+                <div class="card-actions"><button id="test-mail" type="button" class="button ghost small">发送测试邮件</button></div>
+              </article>
+
+              <article class="settings-card wide compact-card">
+                <div class="settings-title"><span class="settings-icon amber">⌘</span><div><h3>Windows 与本地存储</h3><p id="data-path">文档\Tibo Monitor</p></div></div>
+                <div class="form-grid two behavior-grid">
+                  <label class="checkbox-label"><input id="close-to-tray" type="checkbox" /><span>关闭窗口时最小化到托盘</span></label>
+                  <label class="checkbox-label"><input id="start-minimized" type="checkbox" /><span>启动时隐藏到托盘</span></label>
+                </div>
+                <div class="card-actions">
+                  <button id="create-shortcut" type="button" class="button ghost small">创建桌面快捷方式</button>
+                  <button id="open-data" type="button" class="button ghost small">打开数据目录</button>
+                </div>
+              </article>
+            </div>
+            <div class="save-bar">
+              <div><b>所有更改均保存在本机文档目录</b><span>敏感信息不会写入软件目录</span></div>
+              <button id="save-settings" type="submit" class="button primary">保存设置</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="page-about" class="page">
+          <article class="about-hero panel">
+            <img src="../../assets/app-icon.png" alt="Tibo Monitor 图标" />
+            <div><span class="section-kicker">TIBO MONITOR · 0.1.12</span><h2>一个安静守候重置信号的本地工具</h2><p>监控 @thsottiaux 的公开 X 动态，使用 DeepSeek V4 Flash 判断“准备重置”和“已经重置”两类事件，并通过邮件提醒。</p><button class="text-button external" data-url="https://space.bilibili.com/6398431">作者社交主页 →</button></div>
+          </article>
+          <div class="about-grid">
+            <article class="panel"><h3>隐私与存储</h3><p>配置、历史、日志和 DPAPI 加密密钥位于“文档\Tibo Monitor”。登录资料仍归 Firefox 管理；轮询仅创建临时只读快照并在结束后删除。</p></article>
+            <article class="panel"><h3>XActions</h3><p>本工具仅调用 XActions 的只读时间线抓取能力。X 网页结构和规则可能变化，请控制频率并自行确认适用条款。</p><button class="text-button external" data-url="https://github.com/nirholas/XActions">查看开源项目 →</button></article>
+            <article class="panel"><h3>判断边界</h3><p>AI 只做事实分类，代码负责阈值、状态机与去重。通知邮件始终附带原帖链接，请以原帖和实际额度为准。</p></article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status"><span id="toast-icon">✓</span><div><b id="toast-title">完成</b><p id="toast-message"></p></div></div>
+    <script src="app.js"></script>
+  </body>
+</html>

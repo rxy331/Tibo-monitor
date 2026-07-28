@@ -1,0 +1,20 @@
+Tibo Monitor third-party notices
+================================
+
+XActions 3.4.4
+Copyright (c) 2024-2026 nich (@nichxbt) and contributors
+Project: https://github.com/nirholas/XActions
+Root package license: Apache License 2.0
+This application uses XActions timeline selector conventions through a local
+defensive wrapper that reads disposable snapshots of existing browser profiles
+and adds login checks, safe scrolling, and operation serialization.
+
+Electron
+Project: https://www.electronjs.org/
+License: MIT, with Chromium and other third-party notices distributed by Electron.
+
+Nodemailer
+Project: https://nodemailer.com/
+License: MIT
+
+Complete dependency license metadata is retained in the packaged application.

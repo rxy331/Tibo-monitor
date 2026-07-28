@@ -1,0 +1,55 @@
+{
+  "name": "tibo-monitor",
+  "version": "0.1.12",
+  "description": "Portable Windows monitor for Tibo's public X updates and GPT quota reset announcements.",
+  "main": "src/main.cjs",
+  "author": "Local utility",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "build:portable": "electron-builder --win portable --x64",
+    "bootstrap:config": "electron scripts/bootstrap-config.cjs",
+    "smoke:deepseek": "electron scripts/smoke-deepseek.cjs",
+    "smoke:mail": "electron scripts/smoke-mail.cjs",
+    "smoke:ui": "electron scripts/ui-smoke.cjs",
+    "smoke:x": "electron scripts/smoke-x.cjs"
+  },
+  "dependencies": {
+    "nodemailer": "9.0.3",
+    "xactions": "3.4.4"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "local.tibo.monitor",
+    "productName": "Tibo Monitor",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "THIRD_PARTY_NOTICES.txt",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/app-icon.ico",
+      "artifactName": "Tibo-Monitor-${version}-portable.${ext}",
+      "requestedExecutionLevel": "asInvoker"
+    }
+  }
+}
