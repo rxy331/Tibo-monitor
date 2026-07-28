@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  collectOriginalTweetTexts,
   evaluateTimeline,
   isTargetProfilePostsUrl,
   scrapeRecentTweets,
@@ -115,6 +116,27 @@ const element = (tagName, attributes = {}, children = [], text = '') => (
   new FixtureNode(tagName, attributes, children, text)
 );
 
+test('structured X responses preserve source text and prefer long-note text', () => {
+  const originals = collectOriginalTweetTexts({
+    data: {
+      entries: [
+        { content: { item: { itemContent: { tweet_results: { result: {
+          rest_id: '2081940052154933696',
+          legacy: { full_text: 'Back at the laptop.' },
+        } } } } } },
+        { content: { item: { itemContent: { tweet_results: { result: {
+          rest_id: '2081899343091843463',
+          legacy: { full_text: 'Truncated legacy text…' },
+          note_tweet: { note_tweet_results: { result: { text: 'Complete long-form original text.' } } },
+        } } } } } },
+      ],
+    },
+  });
+
+  assert.equal(originals.get('2081940052154933696'), 'Back at the laptop.');
+  assert.equal(originals.get('2081899343091843463'), 'Complete long-form original text.');
+});
+
 function timePermalink(author, id, timestamp) {
   return element('a', { href: `/${author}/status/${id}` }, [
     element('time', { datetime: timestamp }, [], timestamp),
@@ -211,11 +233,12 @@ function buildTimelineFixture() {
   return new FixtureDocument(articles);
 }
 
-function fixturePage(documentOrPages, initialUrl = 'https://x.com/Tibo') {
+function fixturePage(documentOrPages, initialUrl = 'https://x.com/Tibo', graphqlPayload = null) {
   const pages = Array.isArray(documentOrPages) ? documentOrPages : [documentOrPages];
   let pageIndex = 0;
   let currentUrl = initialUrl;
   const visits = [];
+  const responseListeners = new Set();
   let scrollCount = 0;
   return {
     visits,
@@ -224,7 +247,17 @@ function fixturePage(documentOrPages, initialUrl = 'https://x.com/Tibo') {
     goto: async (url) => {
       currentUrl = url;
       visits.push(url);
+      if (graphqlPayload) {
+        const response = {
+          url: () => 'https://x.com/i/api/graphql/example/UserTweets',
+          headers: () => ({ 'content-type': 'application/json' }),
+          json: async () => graphqlPayload,
+        };
+        responseListeners.forEach((listener) => listener(response));
+      }
     },
+    on: (event, listener) => { if (event === 'response') responseListeners.add(listener); },
+    off: (event, listener) => { if (event === 'response') responseListeners.delete(listener); },
     waitForSelector: async () => {},
     evaluate: async (callback, argument) => {
       const previousDocument = global.document;
@@ -326,6 +359,27 @@ test('scraper always visits profile Posts and returns target originals only', as
   assert.deepEqual(posts.map((post) => post.id), ['600', '550', '500', '100']);
   assert.equal(posts.every((post) => post.author === 'tibo' && post.isReply === false && post.isRetweet === false), true);
   assert.equal(posts.find((post) => post.id === '600').text, 'new original');
+});
+
+test('scraper replaces an auto-translated DOM body with the exact X source text', async () => {
+  const document = new FixtureDocument([articleFixture({
+    author: 'Tibo',
+    id: '2081940052154933696',
+    text: '回到笔记本电脑前。所有付费用户的用量限制已经重置。',
+    timestamp: '2026-07-28T08:00:00.000Z',
+  })]);
+  const graphqlPayload = {
+    data: { result: {
+      rest_id: '2081940052154933696',
+      legacy: { full_text: 'Back at the laptop. The usage limits have been reset for all paid users.' },
+    } },
+  };
+  const posts = await scrapeRecentTweets(fixturePage(document, 'about:blank', graphqlPayload), 'Tibo', { limit: 1 });
+
+  assert.equal(posts[0].text, 'Back at the laptop. The usage limits have been reset for all paid users.');
+  assert.equal(posts[0].displayedText, '回到笔记本电脑前。所有付费用户的用量限制已经重置。');
+  assert.equal(posts[0].wasTranslated, true);
+  assert.equal(posts[0].textSource, 'x_structured_response');
 });
 
 test('scraper scrolls past thirty rejected rows until five accepted originals are collected', async () => {

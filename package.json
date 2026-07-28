@@ -1,6 +1,6 @@
 {
   "name": "tibo-monitor",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Portable Windows monitor for Tibo's public X updates and GPT quota reset announcements.",
   "main": "src/main.cjs",
   "author": "Local utility",
@@ -14,7 +14,8 @@
     "smoke:deepseek": "electron scripts/smoke-deepseek.cjs",
     "smoke:mail": "electron scripts/smoke-mail.cjs",
     "smoke:ui": "electron scripts/ui-smoke.cjs",
-    "smoke:x": "electron scripts/smoke-x.cjs"
+    "smoke:x": "electron scripts/smoke-x.cjs",
+    "audit:x70": "electron scripts/audit-x-posts.cjs -- 70 E:\\temp"
   },
   "dependencies": {
     "nodemailer": "9.0.3",
