@@ -424,7 +424,7 @@ test('changing handles clears all account-scoped history and lifecycle state', (
   assert.equal(storage.savedStates.length, 1);
 });
 
-test('baseline uses only target-authored posts and the maximum snowflake regardless of DOM order', async () => {
+test('baseline analyzes every in-window target original but never sends historical mail', async () => {
   const storage = fakeStorage();
   const targetOld = samplePost('200', { timestamp: '2026-07-28T08:00:00.000Z' });
   const targetNew = samplePost('300', { timestamp: '2026-07-28T10:00:00.000Z' });
@@ -434,11 +434,22 @@ test('baseline uses only target-authored posts and the maximum snowflake regardl
     authorHandle: 'someone_else',
   });
   const targetRepost = samplePost('400', { isRetweet: true });
+  let aiCalls = 0;
+  let mailCalls = 0;
   const monitor = new MonitorService({
     storage,
     source: { async fetchLatest() { return [targetOld, foreign, targetRepost, targetNew]; }, async close() {} },
-    ai: { async classify() { throw new Error('baseline must not run AI'); } },
-    mailer: { async sendEvent() { throw new Error('baseline must not send mail'); } },
+    ai: { async classify() {
+      aiCalls += 1;
+      return { events: [{
+        type: 'reset_announced',
+        confidence: 0.99,
+        explicit: true,
+        evidence: ['post'],
+        summary: '历史基线信号',
+      }] };
+    } },
+    mailer: { async sendEvent() { mailCalls += 1; return { messageId: 'must-not-send' }; } },
     now: () => Date.parse('2026-07-28T10:05:00.000Z'),
   });
 
@@ -450,6 +461,12 @@ test('baseline uses only target-authored posts and the maximum snowflake regardl
   assert.deepEqual(new Set(storage.state.seenIds), new Set(['300']));
   assert.equal(storage.state.xConnection.count, 1);
   assert.equal(storage.state.xConnection.newestAt, targetNew.timestamp);
+  assert.equal(aiCalls, 1);
+  assert.equal(mailCalls, 0);
+  assert.equal(storage.state.posts.length, 1);
+  assert.equal(storage.state.posts[0].analysisStatus, 'complete');
+  assert.equal(storage.state.posts[0].analysis.historicalBaseline, true);
+  assert.equal(storage.state.events.length, 0);
 });
 
 test('an unseen post below the high-water mark is historical, not fresh', async () => {
@@ -578,7 +595,7 @@ test('the two observed reset posts pass the direct-evidence gate while a halluci
   assert.equal(storage.state.events.some((event) => event.postId === ambiguousReply.id), false);
 });
 
-test('a no-fresh poll never replays pending historical AI analysis', async () => {
+test('a no-fresh poll analyzes a pending historical record without creating events or mail', async () => {
   const storage = fakeStorage();
   storage.state.baselineEstablished = true;
   storage.state.baselineCutoffId = '500';
@@ -586,6 +603,7 @@ test('a no-fresh poll never replays pending historical AI analysis', async () =>
   storage.state.seenIds = ['500'];
   storage.state.posts = [{
     post: samplePost('400'),
+    classifierVersion: 2,
     fetchedAt: '2026-07-28T09:00:00.000Z',
     analysisStatus: 'pending',
     analysisAttempts: 0,
@@ -602,8 +620,10 @@ test('a no-fresh poll never replays pending historical AI analysis', async () =>
   const result = await monitor.checkNow('test');
 
   assert.equal(result.freshCount, 0);
-  assert.equal(aiCalls, 0);
-  assert.equal(storage.state.posts[0].analysisStatus, 'pending');
+  assert.equal(aiCalls, 1);
+  assert.equal(storage.state.posts[0].analysisStatus, 'complete');
+  assert.equal(storage.state.posts[0].analysis.historicalBaseline, true);
+  assert.equal(storage.state.events.length, 0);
 });
 
 test('a new v2 post retries transient AI failures and creates exactly one event and notification', async () => {

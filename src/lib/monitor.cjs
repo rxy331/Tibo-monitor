@@ -463,7 +463,7 @@ class MonitorService extends EventEmitter {
     return event;
   }
 
-  async analyzePost(postRecord) {
+  async analyzePost(postRecord, { createEvents = true } = {}) {
     const post = postRecord.post;
     try {
       const context = this.storage.state.posts
@@ -487,11 +487,12 @@ class MonitorService extends EventEmitter {
         classifierVersion: CLASSIFIER_VERSION,
         contentHash: hashText(post.text),
         result,
+        historicalBaseline: !createEvents,
         createdAt: new Date().toISOString(),
       };
       const created = [];
       const finding = this.selectPrimaryFinding(post, result);
-      if (finding) {
+      if (finding && createEvents) {
         const event = this.createEvent(post, finding, postRecord.analysis.id);
         if (event) created.push(event);
       }
@@ -627,8 +628,10 @@ class MonitorService extends EventEmitter {
   async retryPending({ postRecords = [], retryNotifications = this.storage.settings.app.monitoringEnabled } = {}) {
     let newEventCount = 0;
     let sentCount = 0;
+    const cutoff = this.storage.state.baselineCutoffId;
     for (const post of [...postRecords].sort(postRecordAscending)) {
-      const outcome = await this.analyzePost(post);
+      const createEvents = !cutoff || compareTweetIds(post.post.id, cutoff) > 0;
+      const outcome = await this.analyzePost(post, { createEvents });
       newEventCount += outcome.newEventCount;
       sentCount += outcome.sentCount;
     }
@@ -642,14 +645,11 @@ class MonitorService extends EventEmitter {
   }
 
   pendingV2AnalysisRecords(now = Date.now()) {
-    const cutoff = this.storage.state.baselineCutoffId;
-    if (!cutoff) return [];
     return this.storage.state.posts
       .filter((record) => Number(record.classifierVersion) === CLASSIFIER_VERSION)
       .filter((record) => ['pending', 'error'].includes(record.analysisStatus))
       .filter((record) => Number(record.analysisAttempts || 0) < 5)
       .filter((record) => isTargetAuthoredPost(record.post, this.storage.settings.x.handle))
-      .filter((record) => compareTweetIds(record.post.id, cutoff) > 0)
       .filter((record) =>
         !record.nextAnalysisAttemptAt ||
         !Number.isFinite(Date.parse(record.nextAnalysisAttemptAt)) ||
@@ -764,10 +764,37 @@ class MonitorService extends EventEmitter {
         this.storage.state.baselineCutoffId = baselineHighWater;
         this.storage.state.highWaterId = baselineHighWater;
         this.storage.state.classifierVersion = CLASSIFIER_VERSION;
+        const baselineRecords = [];
+        for (const post of targetPosts) {
+          const existing = this.storage.state.posts.find((item) => item.post.id === post.id);
+          if (existing) {
+            if (['pending', 'error'].includes(existing.analysisStatus)) baselineRecords.push(existing);
+            continue;
+          }
+          const record = {
+            post,
+            classifierVersion: CLASSIFIER_VERSION,
+            fetchedAt: new Date().toISOString(),
+            analysisStatus: 'pending',
+            analysisAttempts: 0,
+            nextAnalysisAttemptAt: null,
+            analysis: null,
+          };
+          this.storage.state.posts.push(record);
+          baselineRecords.push(record);
+        }
+        this.storage.saveState();
+        const analyzed = await this.retryPending({
+          postRecords: baselineRecords,
+          retryNotifications: false,
+        });
+        run.newEventCount += analyzed.newEventCount;
+        run.sentCount += analyzed.sentCount;
+        this.storage.state.posts.sort(postRecordDescending);
         run.outcome = baselineHighWater ? 'baseline' : 'baseline_pending';
         this.status.newCount = 0;
         this.status.lastMessage = baselineHighWater
-          ? `基线已建立：记录 ${targetPosts.length} 条目标账号现有动态，不发送历史提醒。`
+          ? `基线已建立：已调用大模型分析 ${baselineRecords.length} 条现有动态，不发送历史提醒。`
           : '本轮未读取到目标账号动态，安全基线尚未建立；不会发送历史提醒。';
         if (run.sentCount) this.status.lastMessage += ` 本轮另补发 ${run.sentCount} 封历史提醒。`;
       } else {

@@ -4,8 +4,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   DeepSeekClient,
-  isResetCandidateText,
-  localTemporalType,
   validateClassification,
 } = require('../src/lib/deepseek.cjs');
 const { MonitorService } = require('../src/lib/monitor.cjs');
@@ -110,7 +108,6 @@ test('active present-perfect reset fixture is completed despite outage narrative
     }],
     needs_human_review: false,
   }));
-  assert.equal(localTemporalType(ENGLISH_COMPLETED_FIXTURE), 'reset_completed');
   const result = await client.classify(post(ENGLISH_COMPLETED_FIXTURE, '104'));
   assert.equal(requestCount(), 1);
   assert.equal(result.events[0].type, 'reset_completed');
@@ -150,21 +147,27 @@ test('Tibo rhetorical reset question is treated as an announced signal', async (
   assert.equal(result.events[0].type, 'reset_announced');
 });
 
-test('local candidate gate ignores unrelated and conversational fragments without API calls', async () => {
-  const { client, requestCount } = createClient(() => assert.fail('candidate gate must skip the API'));
+test('every unrelated and conversational post still calls the model', async () => {
+  const { client, requestCount } = createClient(() => ({
+    events: [{ type: 'none', confidence: 0.99, explicit: false, summary: '', evidence: [], reason: 'unrelated post' }],
+    needs_human_review: false,
+  }));
   for (const [index, text] of ['也许', '没错', '玩得开心', 'Have fun!', 'Maybe, sounds right.'].entries()) {
     const result = await client.classify(post(text, `20${index}`));
     assert.equal(result.events[0].type, 'none');
   }
-  assert.equal(requestCount(), 0);
+  assert.equal(requestCount(), 5);
 });
 
 test('positive recent context can never prove an unrelated current post', async () => {
-  const { client, requestCount } = createClient(() => assert.fail('context must not bypass the current-post gate'));
+  const { client, requestCount } = createClient(() => ({
+    events: [{ type: 'none', confidence: 0.99, explicit: false, summary: '', evidence: [], reason: 'current post is unrelated' }],
+    needs_human_review: false,
+  }));
   const context = [post(COMPLETED_USER_FIXTURE, '300')];
   const result = await client.classify(post('没错，祝你玩得开心。', '301'), context, { status: 'completed' });
   assert.equal(result.events[0].type, 'none');
-  assert.equal(requestCount(), 0);
+  assert.equal(requestCount(), 1);
 });
 
 test('generic reset wording is delegated to the model and can fail closed', async () => {
@@ -173,8 +176,6 @@ test('generic reset wording is delegated to the model and can fail closed', asyn
     needs_human_review: false,
   }));
   const text = 'Usage limit reset information is available on the dashboard.';
-  assert.equal(isResetCandidateText(text), true);
-  assert.equal(localTemporalType(text), 'none');
   const result = await client.classify(post(text, '401'));
   assert.equal(result.events[0].type, 'none');
   assert.equal(requestCount(), 1);
@@ -197,7 +198,7 @@ test('invented or context-only evidence is rejected as none', async () => {
   assert.equal(result.events[0].type, 'none');
 });
 
-test('local temporal helper remains advisory and model evidence controls the final type', () => {
+test('model type with exact current-post evidence controls the final type', () => {
   const futureText = 'We will reset usage limits later.';
   const wrongType = validateClassification({
     events: [{ type: 'reset_completed', confidence: 1, explicit: true, evidence: ['reset usage limits'] }],
@@ -205,7 +206,6 @@ test('local temporal helper remains advisory and model evidence controls the fin
   assert.equal(wrongType.events[0].type, 'reset_completed');
 
   const noScope = 'Usage limits have been reset already.';
-  assert.equal(localTemporalType(noScope), 'none');
   const result = validateClassification({
     events: [{ type: 'reset_completed', confidence: 1, explicit: true, evidence: ['Usage limits have been reset'] }],
   }, noScope);

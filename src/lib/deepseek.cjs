@@ -3,12 +3,6 @@
 const { clamp, safeError } = require('./utils.cjs');
 
 const EVENT_TYPES = new Set(['reset_announced', 'reset_completed', 'reset_cancelled', 'uncertain', 'none']);
-const LIMIT_SUBJECT_RE = /\b(?:limits?|quotas?|usage)\b|(?:限额|额度|用量)/i;
-const RESET_ACTION_RE = /\b(?:reset(?:s|ted|ting)?|restore(?:d|s|ing)?)\b|(?:重置|恢复)/i;
-const FUTURE_CUE_RE = /\bwill\b|\bsoon\b|\blater\b|\bin\s+(?:(?:the\s+)?next\s+|a\s+few\s+|\d+\s+)?(?:minutes?|hours?)\b|\bwhen\s+(?:i(?:'m|\s+am)?\s+)?back\b|(?:即将|稍后|几(?:个)?分钟后|几(?:个)?小时后)/i;
-const COMPLETED_CUE_RE = /\b(?:have|has)\s+been\s+(?:reset|restored)\b|\b(?:we|i)\s+(?:have|has)\s+(?:just\s+)?(?:reset|restored)\b|\b(?:usage\s+)?limits?\s+(?:are|is)\s+now\s+(?:reset|restored)\b|\balready\s+(?:reset|restored)\b|\breset\s+(?:is\s+)?(?:live|complete|completed)\b|(?:已经(?:重置|恢复)|(?:重置|恢复)(?:已经|已)?完成)/i;
-const COMPLETED_SCOPE_RE = /\b(?:paid\s+users?|chatgpt(?:\s+work)?|codex)\b|(?:付费用户)/i;
-const CANCELLED_CUE_RE = /\b(?:cancelled?|postponed?)\b|\b(?:won't|will\s+not)\b[^.!?\n]{0,80}\b(?:reset|restore)\b|(?:取消|推迟)[^。！？\n]{0,40}(?:重置|恢复)/i;
 
 const SYSTEM_PROMPT = `Classify one public post written by Tibo about Codex or ChatGPT Work usage-limit resets.
 Return one JSON object only. Do not use markdown.
@@ -30,20 +24,6 @@ Required shape:
 
 function normalizeEvidenceText(value) {
   return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-function isResetCandidateText(text) {
-  const current = String(text || '');
-  return LIMIT_SUBJECT_RE.test(current) && RESET_ACTION_RE.test(current);
-}
-
-function localTemporalType(text) {
-  const current = String(text || '');
-  if (!isResetCandidateText(current)) return 'none';
-  if (CANCELLED_CUE_RE.test(current)) return 'reset_cancelled';
-  if (FUTURE_CUE_RE.test(current)) return 'reset_announced';
-  if (COMPLETED_CUE_RE.test(current) && COMPLETED_SCOPE_RE.test(current)) return 'reset_completed';
-  return 'none';
 }
 
 function noneClassification(reason = '当前帖没有可验证的重置事件。', needsHumanReview = false) {
@@ -178,9 +158,6 @@ class DeepSeekClient {
 
   async classify(post, context = [], lifecycle = {}) {
     const currentText = String(post?.text || '');
-    if (!isResetCandidateText(currentText)) {
-      return noneClassification('本地候选门未同时发现额度主题与重置动作。');
-    }
     const contextText = context.slice(-5).map((item) => ({
       id: item.id,
       timestamp: item.timestamp,
@@ -243,8 +220,6 @@ module.exports = {
   EVENT_TYPES,
   SYSTEM_PROMPT,
   evidenceComesFromCurrentPost,
-  isResetCandidateText,
-  localTemporalType,
   noneClassification,
   normalizeEvidenceText,
   parseJsonContent,
