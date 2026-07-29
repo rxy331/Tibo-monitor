@@ -6,6 +6,7 @@ let xUiBusy = false;
 let browserProfiles = [];
 let browserProfileLoading = false;
 let smtpRecipients = [];
+let recipientSaveQueue = Promise.resolve();
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -159,7 +160,9 @@ function renderRecipientList() {
     <span class="recipient-chip"><span>${escapeText(address)}</span><button type="button" class="recipient-remove" data-recipient-index="${index}" aria-label="删除 ${escapeText(address)}">×</button></span>
   `).join('');
   const hint = $('#smtp-recipient-hint');
-  if (hint) hint.textContent = smtpRecipients.length ? `已添加 ${smtpRecipients.length} 个收件邮箱。` : '至少添加一个收件邮箱；可以逐个删除。';
+  if (hint) hint.textContent = smtpRecipients.length
+    ? `已添加 ${smtpRecipients.length} 个收件邮箱；添加或删除后会自动保存。`
+    : '尚未添加收件邮箱；添加或删除后会自动保存。';
 }
 
 function addRecipientFromInput({ announce = true } = {}) {
@@ -173,6 +176,37 @@ function addRecipientFromInput({ announce = true } = {}) {
   if (input) input.value = '';
   renderRecipientList();
   return true;
+}
+
+function persistRecipientList(successMessage) {
+  const requestedRecipients = [...smtpRecipients];
+  const run = async () => {
+    const hint = $('#smtp-recipient-hint');
+    if (hint) hint.textContent = '正在自动保存收件人列表…';
+    const result = await window.tibo.saveMailRecipients(requestedRecipients);
+    if (!result?.ok) {
+      renderRecipientList();
+      showToast('收件人自动保存失败', result?.message || '无法写入本地设置。', 'error', 10000);
+      return false;
+    }
+    snapshot = result.snapshot;
+    render(result.snapshot, { fillSettings: false });
+    if (hint) hint.textContent = `已自动保存 ${result.recipients.length} 个收件邮箱。`;
+    showToast('收件人已自动保存', successMessage);
+    return true;
+  };
+  recipientSaveQueue = recipientSaveQueue.then(run, run);
+  return recipientSaveQueue;
+}
+
+async function addRecipientAndSave() {
+  const before = smtpRecipients.length;
+  if (!addRecipientFromInput()) return false;
+  if (smtpRecipients.length === before) {
+    showToast('收件人已存在', '该邮箱已在收件人列表中。');
+    return true;
+  }
+  return persistRecipientList('新收件邮箱已写入本地文档。');
 }
 
 function showToast(title, message, state = 'success', duration = 4500) {
@@ -749,19 +783,21 @@ function bindEvents() {
     showToast('已清除 Firefox 程序路径', '保存后将从系统自动检测 Mozilla Firefox。');
     syncXActionButtons();
   });
-  $('#add-smtp-recipient').addEventListener('click', () => addRecipientFromInput());
+  $('#add-smtp-recipient').addEventListener('click', () => { void addRecipientAndSave(); });
   $('#smtp-recipient-input').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      addRecipientFromInput();
+      void addRecipientAndSave();
     }
   });
   $('#smtp-recipient-list').addEventListener('click', (event) => {
     const button = event.target.closest('.recipient-remove');
     if (!button) return;
     const index = Number(button.dataset.recipientIndex);
-    if (Number.isInteger(index) && index >= 0 && index < smtpRecipients.length) smtpRecipients.splice(index, 1);
+    if (!Number.isInteger(index) || index < 0 || index >= smtpRecipients.length) return;
+    smtpRecipients.splice(index, 1);
     renderRecipientList();
+    void persistRecipientList('收件人删除结果已写入本地文档。');
   });
   $('#open-data').addEventListener('click', () => window.tibo.openData());
   $('#create-shortcut').addEventListener('click', (event) => withBusy(event.currentTarget, () => window.tibo.createShortcut(), '快捷方式已创建'));

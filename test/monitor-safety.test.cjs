@@ -170,6 +170,9 @@ test('the main process gates navigation and all IPC handlers to the local render
   assert.match(mainSource, /IPC_UNTRUSTED_SENDER/);
   assert.equal((mainSource.match(/ipcMain\.handle\(/g) || []).length, 1);
   assert.ok((mainSource.match(/trustedHandle\('/g) || []).length >= 14);
+  assert.match(mainSource, /trustedHandle\('mail:save-recipients'/);
+  const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.cjs'), 'utf8');
+  assert.match(preloadSource, /saveMailRecipients:\s*\(recipients\)\s*=>\s*ipcRenderer\.invoke\('mail:save-recipients', recipients\)/);
 });
 
 test('portable shortcuts target the persistent launcher and replace an existing link', () => {

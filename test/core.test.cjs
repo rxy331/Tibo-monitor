@@ -1011,6 +1011,31 @@ test('an unreadable secrets file is quarantined instead of crashing startup', ()
   }
 });
 
+test('multiple mail recipients survive a full storage restart', () => {
+  const tempDocuments = fs.mkdtempSync(path.join(os.tmpdir(), 'tibo-monitor-recipients-'));
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    decryptString: (value) => value.toString('utf8'),
+    encryptString: (value) => Buffer.from(value, 'utf8'),
+  };
+  try {
+    const first = new Storage({ documentsPath: tempDocuments, safeStorage }).init();
+    first.saveSettings({
+      ...first.settings,
+      mail: {
+        ...first.settings.mail,
+        recipients: ['first@example.com', 'Second@example.com'],
+      },
+    });
+
+    const restarted = new Storage({ documentsPath: tempDocuments, safeStorage }).init();
+
+    assert.deepEqual(restarted.settings.mail.recipients, ['first@example.com', 'Second@example.com']);
+  } finally {
+    fs.rmSync(tempDocuments, { recursive: true, force: true });
+  }
+});
+
 function fakeStorage() {
   const storage = {
     settings: structuredClone(DEFAULT_SETTINGS),

@@ -22,7 +22,7 @@ const { listFirefoxProfiles } = require('./lib/firefox-profiles.cjs');
 const { DeepSeekClient } = require('./lib/deepseek.cjs');
 const { Mailer } = require('./lib/mailer.cjs');
 const { MonitorService, rebaseSettingsSnapshot } = require('./lib/monitor.cjs');
-const { backupLegacyJsonFile, safeError, sanitizeSettings } = require('./lib/utils.cjs');
+const { backupLegacyJsonFile, parseRecipients, safeError, sanitizeSettings } = require('./lib/utils.cjs');
 const { configureElectronDataPaths } = require('./lib/electron-paths.cjs');
 
 configureElectronDataPaths(app);
@@ -358,6 +358,35 @@ function registerIpc(ai, mailer) {
           snapshot: monitor.snapshot(),
           ...(startResult?.ok === false ? { warning: startResult.message, code: startResult.code } : {}),
         };
+      } catch (error) {
+        return { ok: false, message: safeError(error), code: error.code || null };
+      }
+    });
+  });
+
+  trustedHandle('mail:save-recipients', (_event, requestedRecipients = []) => {
+    const recipients = parseRecipients(requestedRecipients).slice(0, 50);
+    return enqueueSettingsSave(async () => {
+      try {
+        const previousRecipients = storage.settings.mail.recipients || [];
+        const changed = JSON.stringify(previousRecipients) !== JSON.stringify(recipients);
+        if (changed) {
+          storage.saveSettings({
+            ...storage.settings,
+            mail: { ...storage.settings.mail, recipients },
+          });
+          storage.state.mailConnection = {
+            status: 'unverified',
+            checkedAt: null,
+            message: '收件人列表已自动保存，请重新发送测试邮件。',
+            host: storage.settings.mail.host,
+            port: storage.settings.mail.port,
+            accepted: 0,
+          };
+          storage.saveState();
+          monitor.emitUpdate();
+        }
+        return { ok: true, recipients: [...storage.settings.mail.recipients], snapshot: monitor.snapshot() };
       } catch (error) {
         return { ok: false, message: safeError(error), code: error.code || null };
       }
