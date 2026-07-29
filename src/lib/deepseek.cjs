@@ -3,51 +3,27 @@
 const { clamp, safeError } = require('./utils.cjs');
 
 const EVENT_TYPES = new Set(['reset_announced', 'reset_completed', 'reset_cancelled', 'uncertain', 'none']);
-const LIMIT_SUBJECT_RE = /\b(?:limits?|quotas?|usage)\b|(?:限额|额度|用量)/i;
-const RESET_ACTION_RE = /\b(?:reset(?:s|ted|ting)?|restore(?:d|s|ing)?)\b|(?:重置|恢复)/i;
-const FUTURE_CUE_RE = /\bwill\b|\bsoon\b|\blater\b|\bin\s+(?:(?:the\s+)?next\s+|a\s+few\s+|\d+\s+)?hours?\b|\bwhen\s+(?:i(?:'m|\s+am)?\s+)?back\b|(?:即将|稍后|几(?:个)?小时后)/i;
-const COMPLETED_CUE_RE = /\b(?:have|has)\s+been\s+(?:reset|restored)\b|\balready\s+(?:reset|restored)\b|(?:已经(?:重置|恢复)|(?:重置|恢复)(?:已经|已)?完成)/i;
-const COMPLETED_SCOPE_RE = /\b(?:paid\s+users?|chatgpt(?:\s+work)?|codex)\b|(?:付费用户)/i;
-const CANCELLED_CUE_RE = /\b(?:cancelled?|postponed?)\b|\b(?:won't|will\s+not)\b[^.!?\n]{0,80}\b(?:reset|restore)\b|(?:取消|推迟)[^。！？\n]{0,40}(?:重置|恢复)/i;
 
-const SYSTEM_PROMPT = `You are a strict event classifier for public posts by Tibo, an OpenAI team member.
-Your only task is to determine whether Tibo himself is announcing a GPT/Codex/ChatGPT Work usage-limit reset.
+const SYSTEM_PROMPT = `Classify one public post written by Tibo about Codex or ChatGPT Work usage-limit resets.
 Return one JSON object only. Do not use markdown.
 
-Distinguish carefully:
-- reset_announced: the current post contains a future cue such as will, soon, later, in hours, when back, 即将, 稍后, 几小时后, or 几个小时后. Hedged wording such as "I feel like" / "感觉" is still announced when a future cue is present.
-- reset_completed: only when the current post explicitly says have/has been reset, already reset, 已经重置, or 重置完成, and names paid users, ChatGPT, or Codex as the scope.
-- reset_cancelled: a previously planned reset is explicitly cancelled or postponed.
-- uncertain: relevant but requires human review; it must never be treated as notification proof.
-- none: unrelated discussion, a question/request, a quote of somebody else, a joke without a factual statement, or a negated reset.
+Choose exactly one result:
+- reset_announced: Tibo releases a credible signal that a reset is planned, likely, or imminent. Social-media teasers, hedged wording, and rhetorical questions such as "Should we reset ... again?" count when Tibo is clearly floating his own reset action to users. A reset described as "lands in the next hour" has not happened yet and is announced.
+- reset_completed: Tibo says the reset action has already been executed, started, or completed. If he announces "another reset" and says users should have their limit back in a few minutes, treat it as completed with short propagation delay.
+- reset_cancelled: Tibo explicitly cancels or postpones a reset.
+- uncertain: reset-related, but attribution or intent is too ambiguous to classify safely.
+- none: unrelated content, another person's request, general documentation, or no meaningful reset signal from Tibo.
 
-The current_post is the only source that can prove an event. recent_context can clarify references but can NEVER prove that current_post contains an event.
-Every non-none event must include non-empty evidence copied verbatim from current_post.text. Never quote or paraphrase context as evidence.
-Future meaning takes priority over completed meaning when both appear. Generic words without a permitted temporal cue are none.
-Return at most ONE primary event. If the type, scope, timing, or evidence is not directly supported by current_post, fail closed with none.
-Do not infer a time that is absent. Do not treat a user's request to Tibo as Tibo's own announcement.
-Set needs_human_review=true whenever attribution or meaning is genuinely ambiguous; human-review results are not notification proof.
-Summaries must be concise Chinese.
+Judge the meaning of the whole post, not isolated tense keywords. A question can be a signal when it is Tibo teasing or proposing his own action; do not automatically discard question marks. A service outage recovery alone is not a usage reset. The key boundary is whether the reset action itself is still future (announced) or has already been performed (completed); propagation delay after performance does not make it future.
+The current_post is the only proof. recent_context may clarify references but can never create an event absent from current_post.
+For every non-none result, copy at least one exact evidence span from current_post.text. Never translate or paraphrase evidence.
+Return at most one event. Do not invent an absolute time. Write summary and reason in concise Chinese, while evidence stays in the original language.
 
-Required JSON shape example:
-{"schema_version":"2","events":[{"type":"reset_announced","confidence":0.93,"explicit":true,"effective_at":null,"time_text":"in the next hour","summary":"Tibo 表示将在一小时内重置额度","evidence":["will reset usage limits","in the next hour"],"reason":"current_post 使用明确将来时"}],"needs_human_review":false}`;
+Required shape:
+{"schema_version":"2","events":[{"type":"reset_announced|reset_completed|reset_cancelled|uncertain|none","confidence":0.0,"explicit":true,"effective_at":null,"time_text":"","summary":"中文摘要","evidence":["exact original text"],"reason":"中文理由"}],"needs_human_review":false}`;
 
 function normalizeEvidenceText(value) {
   return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-function isResetCandidateText(text) {
-  const current = String(text || '');
-  return LIMIT_SUBJECT_RE.test(current) && RESET_ACTION_RE.test(current);
-}
-
-function localTemporalType(text) {
-  const current = String(text || '');
-  if (!isResetCandidateText(current)) return 'none';
-  if (CANCELLED_CUE_RE.test(current)) return 'reset_cancelled';
-  if (FUTURE_CUE_RE.test(current)) return 'reset_announced';
-  if (COMPLETED_CUE_RE.test(current) && COMPLETED_SCOPE_RE.test(current)) return 'reset_completed';
-  return 'none';
 }
 
 function noneClassification(reason = '当前帖没有可验证的重置事件。', needsHumanReview = false) {
@@ -103,13 +79,14 @@ function validateClassification(raw, currentPostText = null) {
       needs_human_review: needsHumanReview,
     };
   }
-  const expectedType = localTemporalType(currentPostText);
-  if (expectedType === 'none') return noneClassification('当前帖缺少可验证的时间或完成条件。', needsHumanReview);
+  const noneEvent = normalized.find((event) => event.type === 'none');
   const eligible = normalized
-    .filter((event) => event.type === expectedType)
+    .filter((event) => event.type !== 'none')
     .filter((event) => evidenceComesFromCurrentPost(event, currentPostText))
     .sort((left, right) => Number(right.explicit) - Number(left.explicit) || right.confidence - left.confidence);
-  if (!eligible.length) return noneClassification('AI 类型或证据与当前帖不一致，已按无事件处理。', needsHumanReview);
+  if (!eligible.length) {
+    return noneClassification(noneEvent?.reason || 'AI 未提供可由当前帖原文验证的重置信号。', needsHumanReview);
+  }
   return {
     schema_version: '2',
     events: [eligible[0]],
@@ -181,12 +158,6 @@ class DeepSeekClient {
 
   async classify(post, context = [], lifecycle = {}) {
     const currentText = String(post?.text || '');
-    if (!isResetCandidateText(currentText)) {
-      return noneClassification('本地候选门未同时发现额度主题与重置动作。');
-    }
-    if (localTemporalType(currentText) === 'none') {
-      return noneClassification('当前帖只有泛化重置词，没有允许的未来或明确完成线索。');
-    }
     const contextText = context.slice(-5).map((item) => ({
       id: item.id,
       timestamp: item.timestamp,
@@ -249,8 +220,6 @@ module.exports = {
   EVENT_TYPES,
   SYSTEM_PROMPT,
   evidenceComesFromCurrentPost,
-  isResetCandidateText,
-  localTemporalType,
   noneClassification,
   normalizeEvidenceText,
   parseJsonContent,

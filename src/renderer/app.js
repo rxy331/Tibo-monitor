@@ -374,7 +374,11 @@ function renderActivity() {
   $('#activity-list').classList.toggle('empty-state', posts.length === 0);
   $('#activity-list').innerHTML = posts.length ? posts.map((item) => {
     const finding = item.analysis?.result?.events?.find((event) => event.type !== 'none');
-    const [baseLabel, cls] = finding ? eventLabel(finding.type) : [item.analysisStatus === 'error' ? '分析失败' : '等待分析', ''];
+    const [baseLabel, cls] = finding
+      ? eventLabel(finding.type)
+      : item.analysisStatus === 'complete'
+        ? ['AI 已分析 · 无信号', '']
+        : [item.analysisStatus === 'error' ? '分析失败' : '等待分析', ''];
     const label = item.analysis?.result?.needs_human_review ? `${baseLabel} · 人工复核` : baseLabel;
     return `<article class="feed-item">
       <div class="feed-top"><div class="feed-meta"><span class="tag">@${escapeText(snapshot.settings.x.handle)}</span><span>${formatTime(item.post.tweetAt || item.post.timestamp || item.tweetAt || item.createdAt, '时间未知')}</span></div><span class="tag ${cls}">${label}${finding ? ` · ${Math.round(finding.confidence * 100)}%` : ''}</span></div>

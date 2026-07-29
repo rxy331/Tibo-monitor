@@ -119,6 +119,52 @@ function dedupeAndSortTweets(items, limit = Infinity) {
   return withOrder.slice(0, take).map(({ item }) => item);
 }
 
+function collectOriginalTweetTexts(value, originals = new Map(), seen = new Set()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return originals;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectOriginalTweetTexts(item, originals, seen));
+    return originals;
+  }
+
+  const id = String(value.rest_id || value.id_str || '');
+  const legacyText = typeof value.legacy?.full_text === 'string' ? value.legacy.full_text : '';
+  const noteText = value.note_tweet?.note_tweet_results?.result?.text;
+  const text = typeof noteText === 'string' && noteText ? noteText : legacyText;
+  if (/^\d+$/.test(id) && text) originals.set(id, text);
+
+  Object.values(value).forEach((item) => collectOriginalTweetTexts(item, originals, seen));
+  return originals;
+}
+
+function observeOriginalTweetTexts(page) {
+  const originals = new Map();
+  const pending = new Set();
+  if (typeof page?.on !== 'function') {
+    return { originals, settle: async () => {}, stop: () => {} };
+  }
+
+  const onResponse = (response) => {
+    if (!/\/graphql\//i.test(String(response?.url?.() || ''))) return;
+    const task = Promise.resolve().then(async () => {
+      const contentType = String(response.headers?.()['content-type'] || '');
+      if (contentType && !contentType.includes('json')) return;
+      collectOriginalTweetTexts(await response.json(), originals);
+    }).catch(() => {});
+    pending.add(task);
+    task.finally(() => pending.delete(task));
+  };
+  page.on('response', onResponse);
+  return {
+    originals,
+    settle: async () => { await Promise.allSettled([...pending]); },
+    stop: () => {
+      if (typeof page.off === 'function') page.off('response', onResponse);
+      else if (typeof page.removeListener === 'function') page.removeListener('response', onResponse);
+    },
+  };
+}
+
 async function evaluateTimeline(page, username) {
   let lastError = null;
   const targetHandle = normalizeTargetHandle(username);
@@ -174,6 +220,9 @@ async function evaluateTimeline(page, username) {
             node?.getAttribute?.('title'),
             node?.textContent,
           ].filter(Boolean).map((label) => String(label).replace(/\s+/g, ' ').trim());
+          const translationLabels = [...article.querySelectorAll('button, [role="button"], span')]
+            .filter((node) => isOuterNode(node))
+            .flatMap((node) => explicitContextLabels(node));
           const replyContexts = [
             ...article.querySelectorAll('[data-testid="replyingTo"], [data-testid="replyContext"], div[id^="id__"]'),
             ...socialContexts,
@@ -197,6 +246,9 @@ async function evaluateTimeline(page, username) {
             id: permalink.id,
             author: permalink.author,
             text: outerText?.textContent || null,
+            displayedAsTranslated: translationLabels.some((label) => (
+              /\bshow original\b|显示原文|顯示原文|\btranslated from\b|翻译自|翻譯自/i.test(label)
+            )),
             timestamp: outerTime?.getAttribute?.('datetime') || null,
             url: permalink.url,
             likes: readMetric('like'),
@@ -240,8 +292,10 @@ async function safeScroll(page) {
 async function scrapeRecentTweets(page, username, options = {}) {
   const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
   const targetHandle = normalizeTargetHandle(username);
-  const url = `https://x.com/${encodeURIComponent(targetHandle)}`;
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  const originalCapture = observeOriginalTweetTexts(page);
+  try {
+    const url = `https://x.com/${encodeURIComponent(targetHandle)}`;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForSelector('body', { timeout: 15000 });
   try {
     await page.waitForSelector(
@@ -258,7 +312,8 @@ async function scrapeRecentTweets(page, username, options = {}) {
   await sleep(700);
 
   const tweets = new Map();
-  const maxPasses = Math.min(12, Math.max(4, Math.ceil(limit / 4) + 2));
+  const defaultMaxPasses = Math.min(12, Math.max(4, Math.ceil(limit / 4) + 2));
+  const maxPasses = Math.max(4, Math.min(60, Number(options.maxPasses || defaultMaxPasses)));
 
   for (let pass = 0; pass < maxPasses && tweets.size < limit; pass += 1) {
     const state = await evaluateTimeline(page, targetHandle);
@@ -284,10 +339,36 @@ async function scrapeRecentTweets(page, username, options = {}) {
     await sleep(900 + Math.floor(Math.random() * 500));
   }
 
-  return dedupeAndSortTweets([...tweets.values()], limit);
+    await originalCapture.settle();
+    const accepted = dedupeAndSortTweets([...tweets.values()], limit);
+    const missingOriginals = accepted.filter((post) => (
+      post.displayedAsTranslated && !originalCapture.originals.has(String(post.id))
+    ));
+    if (missingOriginals.length) {
+      throw createXError(
+        'X_ORIGINAL_TEXT_UNAVAILABLE',
+        `X 返回了 ${missingOriginals.length} 条自动译文，但暂未取得对应原文；本轮已停止判断以避免误报。`,
+      );
+    }
+    return accepted.map((post) => {
+      const originalText = originalCapture.originals.get(String(post.id));
+      if (!originalText) return { ...post, textSource: 'visible_dom', wasTranslated: false };
+      const displayedText = post.text;
+      return {
+        ...post,
+        text: originalText,
+        displayedText: displayedText !== originalText ? displayedText : null,
+        wasTranslated: displayedText !== originalText,
+        textSource: 'x_structured_response',
+      };
+    });
+  } finally {
+    originalCapture.stop();
+  }
 }
 
 module.exports = {
+  collectOriginalTweetTexts,
   createXError,
   dedupeAndSortTweets,
   evaluateTimeline,

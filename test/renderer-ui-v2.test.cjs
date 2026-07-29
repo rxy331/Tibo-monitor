@@ -78,6 +78,7 @@ test('reply and pure-retweet controls and payload fields are absent while policy
   assert.match(html, /回复与纯转推始终排除，只分析 Tibo 本人原创帖/);
   assert.match(html, /每轮只分析最近30分钟原创帖/);
   assert.match(html, /id="poll-interval"[^>]*min="5"[^>]*max="30"/);
+  assert.match(appSource, /AI 已分析 · 无信号/);
 });
 
 test('actual migration shape keeps both valid positives visible and supersedes only old mail', () => {
