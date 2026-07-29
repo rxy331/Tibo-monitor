@@ -965,6 +965,7 @@ test('mail outbox is durable before send, retries a failure, and does not resend
     async classify() {
       aiCalls += 1;
       return {
+        translation_zh: '旧账户的帖子，内容是重置限额。',
         events: [{
           type: 'reset_announced',
           confidence: 0.99,
@@ -993,6 +994,7 @@ test('mail outbox is durable before send, retries a failure, and does not resend
   assert.equal(aiCalls, 1);
   assert.equal(mailCalls, 1);
   assert.equal(storage.state.events[0].notificationStatus, 'failed');
+  assert.equal(storage.state.events[0].translationZh, '旧账户的帖子，内容是重置限额。');
   assert.equal(storage.state.notifications[0].status, 'failed');
   assert.equal(storage.state.notifications[0].attempts, 1);
 

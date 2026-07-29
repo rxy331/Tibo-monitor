@@ -38,7 +38,11 @@ function createClient(responseFactory) {
   });
   client.request = async (messages) => {
     requestCount += 1;
-    return JSON.stringify(responseFactory(messages, requestCount));
+    const response = responseFactory(messages, requestCount);
+    if (response && Array.isArray(response.events) && !Object.hasOwn(response, 'translation_zh')) {
+      response.translation_zh = '测试中文翻译';
+    }
+    return JSON.stringify(response);
   };
   return { client, requestCount: () => requestCount };
 }
@@ -155,8 +159,37 @@ test('every unrelated and conversational post still calls the model', async () =
   for (const [index, text] of ['也许', '没错', '玩得开心', 'Have fun!', 'Maybe, sounds right.'].entries()) {
     const result = await client.classify(post(text, `20${index}`));
     assert.equal(result.events[0].type, 'none');
+    assert.equal(result.translation_zh, '测试中文翻译');
   }
   assert.equal(requestCount(), 5);
+});
+
+test('classification requests a translation fallback when the first model response omits it', async () => {
+  let requestCount = 0;
+  const client = new DeepSeekClient({
+    getSettings: () => ({
+      x: { handle: 'thsottiaux' },
+      ai: { model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', timeoutSeconds: 30, thinkingEnabled: false },
+    }),
+    getApiKey: () => 'test-only',
+    log: () => {},
+  });
+  client.request = async () => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      return JSON.stringify({
+        events: [{ type: 'none', confidence: 0.99, explicit: false, summary: '', evidence: [], reason: 'unrelated' }],
+        needs_human_review: false,
+      });
+    }
+    return JSON.stringify({ translation_zh: '今天是个好日子。' });
+  };
+
+  const result = await client.classify(post('Today is a good day.', '299'));
+
+  assert.equal(requestCount, 2);
+  assert.equal(result.events[0].type, 'none');
+  assert.equal(result.translation_zh, '今天是个好日子。');
 });
 
 test('positive recent context can never prove an unrelated current post', async () => {
