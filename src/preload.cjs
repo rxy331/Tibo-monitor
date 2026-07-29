@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('tibo', Object.freeze({
   getState: () => ipcRenderer.invoke('app:get-state'),
   saveSettings: (payload) => ipcRenderer.invoke('settings:save', payload),
+  saveMailRecipients: (recipients) => ipcRenderer.invoke('mail:save-recipients', recipients),
   toggleMonitor: (enabled) => ipcRenderer.invoke('monitor:toggle', enabled),
   checkNow: () => ipcRenderer.invoke('monitor:check'),
   testAi: () => ipcRenderer.invoke('ai:test'),

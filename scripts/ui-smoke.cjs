@@ -111,6 +111,18 @@ app.whenReady().then(async () => {
     snapshot.settings = structuredClone(payload.settings);
     return { ok: true, snapshot };
   });
+  ipcMain.handle('mail:save-recipients', async (_event, recipients) => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    snapshot.settings.mail.recipients = structuredClone(recipients);
+    snapshot.state.mailConnection = {
+      ...snapshot.state.mailConnection,
+      status: 'unverified',
+      checkedAt: null,
+      message: '收件人列表已自动保存，请重新发送测试邮件。',
+      accepted: 0,
+    };
+    return { ok: true, recipients: structuredClone(recipients), snapshot };
+  });
   for (const channel of ['monitor:toggle', 'app:open-data', 'app:create-shortcut-and-confirm', 'app:open-external']) {
     ipcMain.handle(channel, () => ({ ok: true, snapshot }));
   }
@@ -435,13 +447,18 @@ app.whenReady().then(async () => {
     const initialRecipients = [...document.querySelectorAll('.recipient-chip')].map((node) => node.textContent).join('|');
     document.querySelector('#smtp-recipient-input').value = 'second@example.com';
     document.querySelector('#add-smtp-recipient').click();
+    await wait(80);
+    const autoSavedAfterAdd = (await window.tibo.getState()).settings.mail.recipients.join('|') === 'first@example.com|second@example.com'
+      && document.querySelector('#smtp-recipient-hint').textContent.includes('已自动保存 2 个');
     document.querySelector('#smtp-recipient-input').value = 'SECOND@example.com';
     document.querySelector('#add-smtp-recipient').click();
     const recipientsAdded = document.querySelectorAll('.recipient-chip').length === 2
       && document.querySelector('#smtp-recipient-list').textContent.includes('second@example.com');
     document.querySelector('.recipient-remove').click();
+    await wait(80);
     const recipientRemoved = document.querySelectorAll('.recipient-chip').length === 1
       && !document.querySelector('#smtp-recipient-list').textContent.includes('first@example.com');
+    const autoSavedAfterDelete = (await window.tibo.getState()).settings.mail.recipients.join('|') === 'second@example.com';
     document.querySelector('#poll-interval').value = '60';
     document.querySelector('#test-x').click();
     await wait(80);
@@ -469,9 +486,9 @@ app.whenReady().then(async () => {
     const xCardRect = document.querySelector('#x-settings-card').getBoundingClientRect();
     const aiCardRect = document.querySelector('#ai-url').closest('.settings-card').getBoundingClientRect();
     const settingsColumnsAligned = Math.abs(xCardRect.top - aiCardRect.top) < 2 && aiCardRect.left > xCardRect.right;
-    return { firefoxOnly, profilesLoaded, aiRestored, mailRestored, riskGuard, profileRefreshLocksAll, initialRecipients: initialRecipients.includes('first@example.com'), recipientsAdded, recipientRemoved, loading, success, savedDirect, savedRecipients, pollIntervalClampedOnSave, filtersRemoved, riskPromptVisible, saveBarDoesNotOverlay, settingsColumnsAligned };
+    return { firefoxOnly, profilesLoaded, aiRestored, mailRestored, riskGuard, profileRefreshLocksAll, initialRecipients: initialRecipients.includes('first@example.com'), recipientsAdded, autoSavedAfterAdd, recipientRemoved, autoSavedAfterDelete, loading, success, savedDirect, savedRecipients, pollIntervalClampedOnSave, filtersRemoved, riskPromptVisible, saveBarDoesNotOverlay, settingsColumnsAligned };
   })()`);
-  const required = ['firefoxOnly', 'profilesLoaded', 'aiRestored', 'mailRestored', 'riskGuard', 'profileRefreshLocksAll', 'initialRecipients', 'recipientsAdded', 'recipientRemoved', 'loading', 'success', 'savedDirect', 'savedRecipients', 'pollIntervalClampedOnSave', 'filtersRemoved', 'riskPromptVisible', 'saveBarDoesNotOverlay', 'settingsColumnsAligned'];
+  const required = ['firefoxOnly', 'profilesLoaded', 'aiRestored', 'mailRestored', 'riskGuard', 'profileRefreshLocksAll', 'initialRecipients', 'recipientsAdded', 'autoSavedAfterAdd', 'recipientRemoved', 'autoSavedAfterDelete', 'loading', 'success', 'savedDirect', 'savedRecipients', 'pollIntervalClampedOnSave', 'filtersRemoved', 'riskPromptVisible', 'saveBarDoesNotOverlay', 'settingsColumnsAligned'];
   if (required.some((key) => !interaction[key])) {
     throw new Error('UI interaction smoke failed: ' + JSON.stringify(interaction));
   }
