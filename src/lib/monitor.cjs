@@ -379,7 +379,6 @@ class MonitorService extends EventEmitter {
   }
 
   selectPrimaryFinding(post, result) {
-    if (!postIsResetCandidate(post)) return null;
     const precedence = {
       reset_completed: 4,
       reset_announced: 3,
@@ -393,6 +392,7 @@ class MonitorService extends EventEmitter {
         ...finding,
         directEvidence: true,
         needsHumanReview: Boolean(result?.needs_human_review),
+        translationZh: String(result?.translation_zh || ''),
       }));
     eligible.sort((left, right) =>
       precedence[right.type] - precedence[left.type] || Number(right.confidence || 0) - Number(left.confidence || 0));
@@ -453,6 +453,7 @@ class MonitorService extends EventEmitter {
       cycle,
       effectiveAt: finding.effective_at,
       summary: finding.summary,
+      translationZh: finding.translationZh,
       evidence: finding.evidence,
       reason: finding.reason,
       createdAt: new Date().toISOString(),

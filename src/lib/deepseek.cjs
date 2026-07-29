@@ -18,17 +18,19 @@ Judge the meaning of the whole post, not isolated tense keywords. A question can
 The current_post is the only proof. recent_context may clarify references but can never create an event absent from current_post.
 For every non-none result, copy at least one exact evidence span from current_post.text. Never translate or paraphrase evidence.
 Return at most one event. Do not invent an absolute time. Write summary and reason in concise Chinese, while evidence stays in the original language.
+Always include top-level translation_zh as a faithful, complete Simplified Chinese translation of current_post.text, even when the result is none. Preserve names, URLs, numbers, emoji, paragraph breaks, and meaning.
 
 Required shape:
-{"schema_version":"2","events":[{"type":"reset_announced|reset_completed|reset_cancelled|uncertain|none","confidence":0.0,"explicit":true,"effective_at":null,"time_text":"","summary":"中文摘要","evidence":["exact original text"],"reason":"中文理由"}],"needs_human_review":false}`;
+{"schema_version":"2","translation_zh":"完整中文翻译","events":[{"type":"reset_announced|reset_completed|reset_cancelled|uncertain|none","confidence":0.0,"explicit":true,"effective_at":null,"time_text":"","summary":"中文摘要","evidence":["exact original text"],"reason":"中文理由"}],"needs_human_review":false}`;
 
 function normalizeEvidenceText(value) {
   return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-function noneClassification(reason = '当前帖没有可验证的重置事件。', needsHumanReview = false) {
+function noneClassification(reason = '当前帖没有可验证的重置事件。', needsHumanReview = false, translationZh = '') {
   return {
     schema_version: '2',
+    translation_zh: String(translationZh || ''),
     events: [{
       type: 'none',
       confidence: 0,
@@ -71,10 +73,12 @@ function validateClassification(raw, currentPostText = null) {
     throw new Error('AI 返回的 JSON 缺少 events 数组。');
   }
   const needsHumanReview = Boolean(raw.needs_human_review);
+  const translationZh = typeof raw.translation_zh === 'string' ? raw.translation_zh.trim().slice(0, 12000) : '';
   const normalized = raw.events.map(normalizeEvent);
   if (currentPostText === null || currentPostText === undefined) {
     return {
       schema_version: '2',
+      translation_zh: translationZh,
       events: normalized.slice(0, 1),
       needs_human_review: needsHumanReview,
     };
@@ -85,10 +89,15 @@ function validateClassification(raw, currentPostText = null) {
     .filter((event) => evidenceComesFromCurrentPost(event, currentPostText))
     .sort((left, right) => Number(right.explicit) - Number(left.explicit) || right.confidence - left.confidence);
   if (!eligible.length) {
-    return noneClassification(noneEvent?.reason || 'AI 未提供可由当前帖原文验证的重置信号。', needsHumanReview);
+    return noneClassification(
+      noneEvent?.reason || 'AI 未提供可由当前帖原文验证的重置信号。',
+      needsHumanReview,
+      translationZh,
+    );
   }
   return {
     schema_version: '2',
+    translation_zh: translationZh,
     events: [eligible[0]],
     needs_human_review: needsHumanReview,
   };
@@ -138,7 +147,7 @@ class DeepSeekClient {
           temperature: settings.thinkingEnabled ? undefined : 0,
           thinking: { type: settings.thinkingEnabled ? 'enabled' : 'disabled' },
           response_format: { type: 'json_object' },
-          max_tokens: 900,
+          max_tokens: 1400,
         }),
         signal: controller.signal,
       });
@@ -183,7 +192,16 @@ class DeepSeekClient {
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: `Classify this input and return JSON:\n${JSON.stringify(userPayload)}` },
         ]);
-        return validateClassification(parseJsonContent(content), currentText);
+        const result = validateClassification(parseJsonContent(content), currentText);
+        if (!result.translation_zh) {
+          const translated = parseJsonContent(await this.request([
+            { role: 'system', content: 'Translate the complete input into faithful Simplified Chinese. Preserve names, URLs, numbers, emoji, and paragraph breaks. Return JSON only: {"translation_zh":"..."}.' },
+            { role: 'user', content: currentText },
+          ]));
+          result.translation_zh = String(translated.translation_zh || '').trim().slice(0, 12000);
+        }
+        if (!result.translation_zh) throw new Error('AI 未返回完整中文翻译。');
+        return result;
       } catch (error) {
         lastError = error;
         this.log('warn', `DeepSeek classification attempt ${attempt + 1} failed: ${safeError(error)}`);
