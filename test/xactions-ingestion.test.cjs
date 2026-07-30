@@ -415,6 +415,7 @@ test('source includes target replies when enabled while excluding reposts and un
     log: () => {},
     now: () => Date.parse('2026-07-28T06:00:00.000Z'),
   });
+  source.candidateProfiles = () => [{ path: 'unused', name: 'test-profile' }];
   source.start = async () => { source.page = {}; };
   source.inspectHealth = async () => {};
   source.scrapeTweets = async (_page, _handle, options) => {
@@ -472,6 +473,7 @@ function sourceForTimeWindow(rawPosts, nowIso) {
     log: () => {},
     now: () => Date.parse(nowIso),
   });
+  source.candidateProfiles = () => [{ path: 'unused', name: 'test-profile' }];
   source.start = async () => { source.page = {}; };
   source.inspectHealth = async () => {};
   source.scrapeTweets = async () => rawPosts;
