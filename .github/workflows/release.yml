@@ -1,0 +1,96 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.1"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build portable Windows executable
+        run: npm run build:portable
+
+      - name: Validate release version and executable
+        shell: pwsh
+        run: |
+          $tagVersion = "${{ github.ref_name }}".TrimStart("v")
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($packageVersion -ne $tagVersion) {
+            throw "Tag version $tagVersion does not match package version $packageVersion."
+          }
+
+          $asset = Get-Item "dist/Tibo-Monitor-$packageVersion-portable.exe"
+          $sizeMiB = [math]::Round($asset.Length / 1MB, 2)
+          if ($asset.Length -gt 220MB) {
+            throw "Portable executable is unexpectedly large: $sizeMiB MiB (limit: 220 MiB)."
+          }
+
+          $sha256 = (Get-FileHash $asset.FullName -Algorithm SHA256).Hash
+          "ASSET_PATH=$($asset.FullName)" >> $env:GITHUB_ENV
+          "ASSET_NAME=$($asset.Name)" >> $env:GITHUB_ENV
+          "ASSET_SIZE_MIB=$sizeMiB" >> $env:GITHUB_ENV
+          "ASSET_SHA256=$sha256" >> $env:GITHUB_ENV
+
+      - name: Preserve build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tibo-Monitor-${{ github.ref_name }}-windows-x64
+          path: ${{ env.ASSET_PATH }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          @"
+          ## Tibo Monitor 0.2.0
+
+          本版本在原有 Tibo 推文监控与 SMTP 邮件提醒基础上新增：
+
+          - Windows 系统通知，可与 SMTP 邮件独立选择或同时启用
+          - 可选择启动时自动复盘过去 1/3/6/12/24/72 小时
+          - 可随时手动对指定时间段执行一次主动复盘
+          - 可选择是否分析 Tibo 的回复帖，并分别维护原创帖与回复帖水位
+          - 增强通知失败重试、复盘幂等性、状态迁移和界面状态展示
+
+          ### Windows 便携版
+
+          - 文件：``$env:ASSET_NAME``
+          - 体积：``$env:ASSET_SIZE_MIB MiB``
+          - SHA-256：``$env:ASSET_SHA256``
+
+          无需安装，下载 EXE 后直接运行。程序未使用商业代码签名证书，Windows SmartScreen 可能显示“未知发布者”。
+
+          GitHub 同时自动附带本标签对应的 Source code（zip）与 Source code（tar.gz）。
+          "@ | Set-Content release-notes.md -Encoding utf8
+
+          gh release create "${{ github.ref_name }}" `
+            "$env:ASSET_PATH" `
+            --repo "${{ github.repository }}" `
+            --title "Tibo Monitor 0.2.0" `
+            --notes-file release-notes.md `
+            --verify-tag
