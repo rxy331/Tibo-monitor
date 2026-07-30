@@ -499,8 +499,6 @@ function fillForm() {
   $('#ai-url').value = settings.ai.baseUrl;
   $('#ai-model').value = settings.ai.model;
   $('#thinking-enabled').checked = settings.ai.thinkingEnabled;
-  $('#threshold-announced').value = settings.ai.announcedThreshold;
-  $('#threshold-completed').value = settings.ai.completedThreshold;
   $('#smtp-host').value = settings.mail.host;
   $('#smtp-port').value = settings.mail.port;
   $('#smtp-user').value = settings.mail.username;
@@ -541,8 +539,6 @@ function readSettingsForm() {
   next.ai.baseUrl = $('#ai-url').value;
   next.ai.model = $('#ai-model').value;
   next.ai.thinkingEnabled = $('#thinking-enabled').checked;
-  next.ai.announcedThreshold = Number($('#threshold-announced').value);
-  next.ai.completedThreshold = Number($('#threshold-completed').value);
   next.mail.host = $('#smtp-host').value;
   next.mail.port = Number($('#smtp-port').value);
   next.mail.username = $('#smtp-user').value;

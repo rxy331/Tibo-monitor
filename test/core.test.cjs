@@ -101,8 +101,8 @@ test('settings are normalized and unsafe numeric ranges are clamped', () => {
   assert.equal(Object.hasOwn(settings.x, 'browser'), false);
   assert.equal(Object.hasOwn(settings.x, 'firefoxProfileMode'), false);
   assert.deepEqual(settings.mail.recipients, []);
-  assert.equal(settings.ai.announcedThreshold, 0.5);
-  assert.equal(settings.ai.completedThreshold, 1);
+  assert.equal(Object.hasOwn(settings.ai, 'announcedThreshold'), false);
+  assert.equal(Object.hasOwn(settings.ai, 'completedThreshold'), false);
 
   const legacySixtyMinutePoll = sanitizeSettings({
     schemaVersion: 1,
@@ -1094,7 +1094,7 @@ test('first poll establishes a baseline; later new post is analyzed and notified
   monitor.stop();
 });
 
-test('an event below the configured threshold is recorded but not emailed', async () => {
+test('a low-confidence model-positive event is recorded and emailed without a score gate', async () => {
   const storage = fakeStorage();
   storage.settings.mail.enabled = true;
   storage.state.baselineEstablished = true;
@@ -1112,7 +1112,7 @@ test('an event below the configured threshold is recorded but not emailed', asyn
     now: () => Date.parse('2026-07-28T01:05:00Z'),
   });
   await monitor.checkNow('test');
-  assert.equal(storage.state.events[0].notificationStatus, 'not_required');
-  assert.equal(sent, 0);
+  assert.equal(storage.state.events[0].notificationStatus, 'sent');
+  assert.equal(sent, 1);
   monitor.stop();
 });

@@ -219,10 +219,12 @@ test('settings migration permanently drops legacy reply and retweet toggles', ()
   legacy.x.includeRetweets = true;
   legacy.ai.promptVersion = 'reset-classifier-v1';
   const migrated = sanitizeSettings(legacy, DEFAULT_SETTINGS);
-  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.schemaVersion, 5);
   assert.equal(Object.hasOwn(migrated.x, 'includeReplies'), false);
   assert.equal(Object.hasOwn(migrated.x, 'includeRetweets'), false);
   assert.equal(migrated.ai.promptVersion, 'reset-classifier-v2');
+  assert.equal(Object.hasOwn(migrated.ai, 'announcedThreshold'), false);
+  assert.equal(Object.hasOwn(migrated.ai, 'completedThreshold'), false);
 
   const current = clone(DEFAULT_SETTINGS);
   current.x.includeReplies = true;
@@ -500,7 +502,7 @@ test('an unseen post below the high-water mark is historical, not fresh', async 
   assert.deepEqual(storage.state.posts, []);
 });
 
-test('one unordered batch is analyzed oldest-first with past-only context and one lifecycle mail per type', async () => {
+test('one unordered batch analyzes and notifies every distinct model-positive post oldest-first', async () => {
   const storage = fakeStorage();
   storage.settings.mail.enabled = true;
   storage.state.baselineEstablished = true;
@@ -545,16 +547,16 @@ test('one unordered batch is analyzed oldest-first with past-only context and on
   assert.deepEqual(contexts.get('301'), []);
   assert.deepEqual(contexts.get('302'), ['301']);
   assert.deepEqual(contexts.get('303'), ['301', '302']);
-  assert.deepEqual(mailOrder, ['301', '302']);
+  assert.deepEqual(mailOrder, ['301', '302', '303']);
   assert.equal(result.freshCount, 3);
-  assert.equal(result.newEventCount, 2);
-  assert.equal(result.sentCount, 2);
+  assert.equal(result.newEventCount, 3);
+  assert.equal(result.sentCount, 3);
   assert.equal(storage.state.lifecycle.status, 'completed');
   assert.deepEqual(storage.state.posts.map((item) => item.post.id), ['303', '302', '301']);
-  assert.deepEqual(storage.state.events.map((event) => event.postId), ['302', '301']);
+  assert.deepEqual(storage.state.events.map((event) => event.postId), ['303', '302', '301']);
 });
 
-test('the two observed reset posts pass the direct-evidence gate while a hallucinated reply does not', async () => {
+test('model-positive posts are accepted and notified without a local evidence gate', async () => {
   const storage = fakeStorage();
   storage.settings.mail.enabled = true;
   storage.state.baselineEstablished = true;
@@ -592,10 +594,10 @@ test('the two observed reset posts pass the direct-evidence gate while a halluci
   const result = await monitor.checkNow('test');
 
   assert.equal(result.freshCount, 3);
-  assert.equal(result.newEventCount, 2);
-  assert.deepEqual(mailOrder, [announced.id, completed.id]);
-  assert.deepEqual(storage.state.events.map((event) => event.postId), [completed.id, announced.id]);
-  assert.equal(storage.state.events.some((event) => event.postId === ambiguousReply.id), false);
+  assert.equal(result.newEventCount, 3);
+  assert.deepEqual(mailOrder, [announced.id, ambiguousReply.id, completed.id]);
+  assert.deepEqual(storage.state.events.map((event) => event.postId), [completed.id, ambiguousReply.id, announced.id]);
+  assert.equal(storage.state.events.some((event) => event.postId === ambiguousReply.id), true);
 });
 
 test('a no-fresh poll analyzes a pending historical record without creating events or mail', async () => {
@@ -763,7 +765,7 @@ test('classifier v2 migration supersedes unsent v1 outbox rows and re-baselines 
   assert.equal(storage.state.highWaterId, '700');
 });
 
-test('actual v1 history migrates to two visible valid events with notification suppression kept separate', () => {
+test('actual v1 history retains all target-authored model events without retroactive evidence filtering', () => {
   const storage = fakeStorage();
   storage.state.schemaVersion = 1;
   storage.state.classifierVersion = 1;
@@ -810,15 +812,15 @@ test('actual v1 history migrates to two visible valid events with notification s
 
   new MonitorService({ storage, source: { async close() {} }, ai: {}, mailer: {} });
 
-  assert.deepEqual(storage.state.posts.map((record) => record.post.id), [completed.id, announced.id]);
-  assert.deepEqual(storage.state.events.map((event) => event.id), ['evt_completed', 'evt_announced']);
+  assert.deepEqual(storage.state.posts.map((record) => record.post.id), [completed.id, falseReply.id, announced.id]);
+  assert.deepEqual(storage.state.events.map((event) => event.id), ['evt_completed', 'evt_false', 'evt_announced']);
   assert.equal(storage.state.events.every((event) => event.validity === 'valid'), true);
   const completedEvent = storage.state.events.find((event) => event.id === 'evt_completed');
   assert.equal(completedEvent.notificationStatus, 'superseded');
   assert.ok(completedEvent.notificationSupersededAt);
   assert.equal(Object.hasOwn(completedEvent, 'supersededAt'), false);
   assert.equal(storage.state.events.find((event) => event.id === 'evt_announced').notificationStatus, 'sent');
-  assert.deepEqual(storage.state.legacyAudit.supersededEventIds, ['evt_false']);
+  assert.deepEqual(storage.state.legacyAudit.supersededEventIds, []);
   assert.equal(storage.state.lifecycle.status, 'completed');
 });
 

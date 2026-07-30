@@ -8,13 +8,13 @@ const SYSTEM_PROMPT = `Classify one public post written by Tibo about Codex or C
 Return one JSON object only. Do not use markdown.
 
 Choose exactly one result:
-- reset_announced: Tibo releases a credible signal that a reset is planned, likely, or imminent. Social-media teasers, hedged wording, and rhetorical questions such as "Should we reset ... again?" count when Tibo is clearly floating his own reset action to users. A reset described as "lands in the next hour" has not happened yet and is announced.
+- reset_announced: Tibo releases a credible signal that a reset is planned, likely, or imminent. Social-media teasers, hedged wording, and rhetorical questions such as "Should we reset ... again?" count when Tibo is clearly floating his own reset action to users. A reset described as "lands in the next hour" has not happened yet and is announced. Tibo may also use a compressed indirect teaser without the word "reset": treat it as announced when the current post combines (a) unusually abundant, effectively unmetered, or dramatically cheaper intelligence/usage language with (b) a concrete near-future action such as shipping, turning it on, or doing it again. For example, "intelligence too cheap to meter" followed by "Tomorrow we ship again" is a credible usage-capacity/reset teaser, not an ordinary unrelated product shipment.
 - reset_completed: Tibo says the reset action has already been executed, started, or completed. If he announces "another reset" and says users should have their limit back in a few minutes, treat it as completed with short propagation delay.
 - reset_cancelled: Tibo explicitly cancels or postpones a reset.
 - uncertain: reset-related, but attribution or intent is too ambiguous to classify safely.
 - none: unrelated content, another person's request, general documentation, or no meaningful reset signal from Tibo.
 
-Judge the meaning of the whole post, not isolated tense keywords. A question can be a signal when it is Tibo teasing or proposing his own action; do not automatically discard question marks. A service outage recovery alone is not a usage reset. The key boundary is whether the reset action itself is still future (announced) or has already been performed (completed); propagation delay after performance does not make it future.
+Judge the meaning of the whole post, not isolated tense keywords. A question can be a signal when it is Tibo teasing or proposing his own action; do not automatically discard question marks. A service outage recovery alone is not a usage reset. Generic product launches, model releases, features, benchmarks, pricing news, and ordinary uses of "ship" remain none unless the current post itself also contains the abundance/unmetered usage-capacity cue described above. The key boundary is whether the reset action itself is still future (announced) or has already been performed (completed); propagation delay after performance does not make it future.
 The current_post is the only proof. recent_context may clarify references but can never create an event absent from current_post.
 For every non-none result, copy at least one exact evidence span from current_post.text. Never translate or paraphrase evidence.
 Return at most one event. Do not invent an absolute time. Write summary and reason in concise Chinese, while evidence stays in the original language.
@@ -22,10 +22,6 @@ Always include top-level translation_zh as a faithful, complete Simplified Chine
 
 Required shape:
 {"schema_version":"2","translation_zh":"完整中文翻译","events":[{"type":"reset_announced|reset_completed|reset_cancelled|uncertain|none","confidence":0.0,"explicit":true,"effective_at":null,"time_text":"","summary":"中文摘要","evidence":["exact original text"],"reason":"中文理由"}],"needs_human_review":false}`;
-
-function normalizeEvidenceText(value) {
-  return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
-}
 
 function noneClassification(reason = '当前帖没有可验证的重置事件。', needsHumanReview = false, translationZh = '') {
   return {
@@ -60,45 +56,17 @@ function normalizeEvent(raw) {
   };
 }
 
-function evidenceComesFromCurrentPost(event, currentPostText) {
-  const current = normalizeEvidenceText(currentPostText);
-  const evidence = Array.isArray(event?.evidence)
-    ? event.evidence.map((item) => normalizeEvidenceText(item)).filter(Boolean)
-    : [];
-  return Boolean(current) && evidence.length > 0 && evidence.every((item) => current.includes(item));
-}
-
-function validateClassification(raw, currentPostText = null) {
+function validateClassification(raw, _currentPostText = null) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.events)) {
     throw new Error('AI 返回的 JSON 缺少 events 数组。');
   }
   const needsHumanReview = Boolean(raw.needs_human_review);
   const translationZh = typeof raw.translation_zh === 'string' ? raw.translation_zh.trim().slice(0, 12000) : '';
   const normalized = raw.events.map(normalizeEvent);
-  if (currentPostText === null || currentPostText === undefined) {
-    return {
-      schema_version: '2',
-      translation_zh: translationZh,
-      events: normalized.slice(0, 1),
-      needs_human_review: needsHumanReview,
-    };
-  }
-  const noneEvent = normalized.find((event) => event.type === 'none');
-  const eligible = normalized
-    .filter((event) => event.type !== 'none')
-    .filter((event) => evidenceComesFromCurrentPost(event, currentPostText))
-    .sort((left, right) => Number(right.explicit) - Number(left.explicit) || right.confidence - left.confidence);
-  if (!eligible.length) {
-    return noneClassification(
-      noneEvent?.reason || 'AI 未提供可由当前帖原文验证的重置信号。',
-      needsHumanReview,
-      translationZh,
-    );
-  }
   return {
     schema_version: '2',
     translation_zh: translationZh,
-    events: [eligible[0]],
+    events: normalized.length ? normalized.slice(0, 1) : noneClassification('模型未返回分类事件。', needsHumanReview, translationZh).events,
     needs_human_review: needsHumanReview,
   };
 }
@@ -237,9 +205,7 @@ module.exports = {
   DeepSeekClient,
   EVENT_TYPES,
   SYSTEM_PROMPT,
-  evidenceComesFromCurrentPost,
   noneClassification,
-  normalizeEvidenceText,
   parseJsonContent,
   validateClassification,
 };

@@ -433,6 +433,10 @@ app.whenReady().then(async () => {
       && document.querySelector('#ai-test-status-message').textContent.includes('deepseek-v4-flash');
     const mailRestored = document.querySelector('#mail-test-status').dataset.state === 'success'
       && document.querySelector('#mail-test-status-message').textContent.includes('QQ SMTP 连接正常');
+    const confidenceThresholdsRemoved = !document.querySelector('#threshold-announced')
+      && !document.querySelector('#threshold-completed')
+      && !document.querySelector('#settings-form').textContent.includes('预告阈值')
+      && !document.querySelector('#settings-form').textContent.includes('完成阈值');
     document.querySelector('#accept-risk').click();
     const riskGuard = !document.querySelector('#risk-required-hint').hidden
       && document.querySelector('#test-x').disabled
@@ -486,9 +490,9 @@ app.whenReady().then(async () => {
     const xCardRect = document.querySelector('#x-settings-card').getBoundingClientRect();
     const aiCardRect = document.querySelector('#ai-url').closest('.settings-card').getBoundingClientRect();
     const settingsColumnsAligned = Math.abs(xCardRect.top - aiCardRect.top) < 2 && aiCardRect.left > xCardRect.right;
-    return { firefoxOnly, profilesLoaded, aiRestored, mailRestored, riskGuard, profileRefreshLocksAll, initialRecipients: initialRecipients.includes('first@example.com'), recipientsAdded, autoSavedAfterAdd, recipientRemoved, autoSavedAfterDelete, loading, success, savedDirect, savedRecipients, pollIntervalClampedOnSave, filtersRemoved, riskPromptVisible, saveBarDoesNotOverlay, settingsColumnsAligned };
+    return { firefoxOnly, profilesLoaded, aiRestored, mailRestored, confidenceThresholdsRemoved, riskGuard, profileRefreshLocksAll, initialRecipients: initialRecipients.includes('first@example.com'), recipientsAdded, autoSavedAfterAdd, recipientRemoved, autoSavedAfterDelete, loading, success, savedDirect, savedRecipients, pollIntervalClampedOnSave, filtersRemoved, riskPromptVisible, saveBarDoesNotOverlay, settingsColumnsAligned };
   })()`);
-  const required = ['firefoxOnly', 'profilesLoaded', 'aiRestored', 'mailRestored', 'riskGuard', 'profileRefreshLocksAll', 'initialRecipients', 'recipientsAdded', 'autoSavedAfterAdd', 'recipientRemoved', 'autoSavedAfterDelete', 'loading', 'success', 'savedDirect', 'savedRecipients', 'pollIntervalClampedOnSave', 'filtersRemoved', 'riskPromptVisible', 'saveBarDoesNotOverlay', 'settingsColumnsAligned'];
+  const required = ['firefoxOnly', 'profilesLoaded', 'aiRestored', 'mailRestored', 'confidenceThresholdsRemoved', 'riskGuard', 'profileRefreshLocksAll', 'initialRecipients', 'recipientsAdded', 'autoSavedAfterAdd', 'recipientRemoved', 'autoSavedAfterDelete', 'loading', 'success', 'savedDirect', 'savedRecipients', 'pollIntervalClampedOnSave', 'filtersRemoved', 'riskPromptVisible', 'saveBarDoesNotOverlay', 'settingsColumnsAligned'];
   if (required.some((key) => !interaction[key])) {
     throw new Error('UI interaction smoke failed: ' + JSON.stringify(interaction));
   }
