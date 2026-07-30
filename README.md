@@ -114,4 +114,4 @@ XActions 使用网页浏览器自动化，并非 X 官方事件流。X 登录墙
 
 - 本扩展仓库：[MizuIro-H/Tibo-monitor-Test](https://github.com/MizuIro-H/Tibo-monitor-Test)
 - 原始仓库：[rxy331/Tibo-monitor](https://github.com/rxy331/Tibo-monitor)
-- [Bilibili 社交主页](https://space.bilibili.com/6398431)
+- [原作者 Bilibili 主页](https://space.bilibili.com/6398431)
