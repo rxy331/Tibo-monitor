@@ -14,6 +14,7 @@ const ENGLISH_ANNOUNCED_FIXTURE = '10M!\n\nNew day, new usage reset for paid use
 const ENGLISH_COMPLETED_FIXTURE = 'We have reset usage limits for all Codex and ChatGPT Work users.\n\nLast night around 2am to 4am we suffered an almost global outage. All well and recovered, but you know what comes next.\n\nWe learn. We reset. Enjoy.';
 const MINUTES_ANNOUNCED_FIXTURE = 'Another reset for our Codex and ChatGPT Work users. Actually hit 9M active users way earlier today, but then got distracted by the approximately millions of things the team is doing to keep the systems up and reliable.\n\nShould have that sweet 100% weekly usage limit back in a few minutes. Go be your productive self and close twitter. Shoo!';
 const RESET_QUESTION_FIXTURE = 'Embarrassment of riches. But looks like we might hit 9M soon. Should we reset the ChatGPT Work and Codex usage again or give it some space?';
+const INDIRECT_CAPACITY_TEASER_FIXTURE = 'This week is all about intelligence too cheap to meter. Tomorrow we ship again.';
 
 function post(text, id = 'fixture') {
   return {
@@ -151,6 +152,38 @@ test('Tibo rhetorical reset question is treated as an announced signal', async (
   assert.equal(result.events[0].type, 'reset_announced');
 });
 
+test('Tibo abundance plus near-future shipping teaser is announced without the reset keyword', async () => {
+  const { client, requestCount } = createClient(() => ({
+    events: [{
+      type: 'reset_announced',
+      confidence: 0.86,
+      explicit: false,
+      summary: 'Tibo 暗示明天将再次放开更低成本的智能用量',
+      evidence: ['intelligence too cheap to meter', 'Tomorrow we ship again'],
+      reason: '极低成本的智能容量暗示与明确的近未来再次发布动作共同构成额度预热信号',
+    }],
+    needs_human_review: false,
+  }));
+
+  const result = await client.classify(post(INDIRECT_CAPACITY_TEASER_FIXTURE, '107'));
+
+  assert.equal(requestCount(), 1);
+  assert.equal(result.events[0].type, 'reset_announced');
+  assert.equal(result.events[0].explicit, false);
+});
+
+test('ordinary product shipping without an abundance or usage-capacity cue remains none', async () => {
+  const { client, requestCount } = createClient(() => ({
+    events: [{ type: 'none', confidence: 0.99, explicit: false, summary: '', evidence: [], reason: 'ordinary product release' }],
+    needs_human_review: false,
+  }));
+
+  const result = await client.classify(post('Tomorrow we ship a new editor update with faster search.', '108'));
+
+  assert.equal(requestCount(), 1);
+  assert.equal(result.events[0].type, 'none');
+});
+
 test('every unrelated and conversational post still calls the model', async () => {
   const { client, requestCount } = createClient(() => ({
     events: [{ type: 'none', confidence: 0.99, explicit: false, summary: '', evidence: [], reason: 'unrelated post' }],
@@ -214,7 +247,7 @@ test('generic reset wording is delegated to the model and can fail closed', asyn
   assert.equal(requestCount(), 1);
 });
 
-test('invented or context-only evidence is rejected as none', async () => {
+test('model classification is accepted even when evidence is absent from the current post', async () => {
   const { client } = createClient(() => ({
     events: [{
       type: 'reset_announced',
@@ -228,7 +261,8 @@ test('invented or context-only evidence is rejected as none', async () => {
   }));
   const result = await client.classify(post('We will reset usage limits soon.', '501'));
   assert.equal(result.events.length, 1);
-  assert.equal(result.events[0].type, 'none');
+  assert.equal(result.events[0].type, 'reset_announced');
+  assert.deepEqual(result.events[0].evidence, ['I already reset every paid Codex account']);
 });
 
 test('model type with exact current-post evidence controls the final type', () => {
@@ -245,7 +279,7 @@ test('model type with exact current-post evidence controls the final type', () =
   assert.equal(result.events[0].type, 'reset_completed');
 });
 
-test('multiple model events collapse to the strongest directly evidenced event', () => {
+test('defensive normalization keeps the first event when a model violates the one-event contract', () => {
   const text = 'ChatGPT limits have been reset already, and we will reset usage limits later.';
   const result = validateClassification({
     events: [
@@ -270,11 +304,10 @@ test('human-review classification remains marked so notification policy can supp
   assert.equal(result.needs_human_review, true);
 
   const monitor = Object.create(MonitorService.prototype);
-  monitor.storage = { settings: { ai: { announcedThreshold: 0.75, completedThreshold: 0.8 } } };
+  monitor.storage = { settings: { ai: {} } };
   assert.equal(monitor.shouldNotify({
     ...result.events[0],
     validity: 'valid',
-    directEvidence: true,
     needsHumanReview: result.needs_human_review,
   }), false);
 });

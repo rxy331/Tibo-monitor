@@ -17,7 +17,6 @@ const X_RISK_NOT_ACCEPTED_MESSAGE = '请先在设置中确认已了解 XActions 
 const CLASSIFIER_VERSION = 2;
 const RECENT_POST_WINDOW_MS = 30 * 60 * 1000;
 const FUTURE_POST_TOLERANCE_MS = 2 * 60 * 1000;
-const SAME_TYPE_SUPPRESSION_WINDOW_MS = 60 * 60 * 1000;
 const ANALYSIS_RETRY_MINUTES = [1, 5, 15, 60];
 const RETRYABLE_NOTIFICATION_STATUSES = new Set(['pending', 'failed', 'error', 'sending']);
 const HISTORICAL_NOTIFICATION_STATUSES = new Set([
@@ -67,21 +66,6 @@ function isPostWithinMonitoringWindow(post, now = Date.now()) {
   return Number.isFinite(timestamp) &&
     timestamp >= now - RECENT_POST_WINDOW_MS &&
     timestamp <= now + FUTURE_POST_TOLERANCE_MS;
-}
-
-function postIsResetCandidate(post) {
-  const text = String(post?.text || '').toLowerCase();
-  const hasLimitSubject = /\b(?:usage|limits?|quotas?|credits?)\b|(?:用量限制|使用限制|额度|限额|配额)/i.test(text);
-  const hasResetAction = /\b(?:reset(?:s|ted|ting)?|restore(?:d|s|ing)?|replenish(?:ed|es|ing)?|refill(?:ed|s|ing)?|top[ -]?up)\b|(?:重置|恢复|补充|补发)/i.test(text);
-  return hasLimitSubject && hasResetAction;
-}
-
-function findingHasCurrentEvidence(post, finding) {
-  const text = String(post?.text || '').toLocaleLowerCase();
-  const evidence = Array.isArray(finding?.evidence)
-    ? finding.evidence.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  return evidence.length > 0 && evidence.every((item) => text.includes(item.toLocaleLowerCase()));
 }
 
 function isMailAuthError(error) {
@@ -171,9 +155,7 @@ class MonitorService extends EventEmitter {
     for (const event of originalEvents) {
       const record = originalPosts.find((item) => item?.post?.id === event.postId);
       const valid = Boolean(record) &&
-        isTargetAuthoredPost(record.post, this.storage.settings.x.handle) &&
-        postIsResetCandidate(record.post) &&
-        findingHasCurrentEvidence(record.post, event);
+        isTargetAuthoredPost(record.post, this.storage.settings.x.handle);
       event.validity = valid ? 'valid' : 'superseded';
       event.classifierVersion = Number(event.classifierVersion || 1);
       if (HISTORICAL_NOTIFICATION_STATUSES.has(event.notificationStatus)) {
@@ -371,11 +353,8 @@ class MonitorService extends EventEmitter {
   }
 
   shouldNotify(event) {
-    const aiSettings = this.storage.settings.ai;
-    if (event.validity === 'superseded' || event.directEvidence === false || event.needsHumanReview) return false;
-    if (event.type === 'reset_announced') return event.confidence >= aiSettings.announcedThreshold;
-    if (event.type === 'reset_completed') return event.confidence >= aiSettings.completedThreshold;
-    return false;
+    if (event.validity === 'superseded' || event.needsHumanReview) return false;
+    return event.type === 'reset_announced' || event.type === 'reset_completed';
   }
 
   selectPrimaryFinding(post, result) {
@@ -387,10 +366,8 @@ class MonitorService extends EventEmitter {
     };
     const eligible = (result?.events || [])
       .filter((finding) => finding?.type !== 'none' && precedence[finding?.type])
-      .filter((finding) => findingHasCurrentEvidence(post, finding))
       .map((finding) => ({
         ...finding,
-        directEvidence: true,
         needsHumanReview: Boolean(result?.needs_human_review),
         translationZh: String(result?.translation_zh || ''),
       }));
@@ -421,23 +398,10 @@ class MonitorService extends EventEmitter {
     return Number(lifecycle.cycle || 0);
   }
 
-  isRecentSameTypeEvent(post, finding, cycle) {
-    const currentTime = Date.parse(post.timestamp);
-    return this.storage.state.events.some((event) => {
-      if (event.type !== finding.type || event.validity === 'superseded') return false;
-      if (Number(event.cycle ?? cycle) !== cycle) return false;
-      const priorPost = this.storage.state.posts.find((item) => item.post.id === event.postId)?.post;
-      const priorTime = Date.parse(priorPost?.timestamp || event.createdAt);
-      if (!Number.isFinite(currentTime) || !Number.isFinite(priorTime)) return false;
-      return Math.abs(currentTime - priorTime) <= SAME_TYPE_SUPPRESSION_WINDOW_MS;
-    });
-  }
-
   createEvent(post, finding, analysisId) {
     const fingerprint = `${post.id}:${finding.type}`;
     if (this.storage.state.events.some((event) => event.fingerprint === fingerprint)) return null;
     const cycle = this.intendedCycleFor(finding);
-    if (this.isRecentSameTypeEvent(post, finding, cycle)) return null;
     const event = {
       id: id('evt'),
       fingerprint,
@@ -448,7 +412,6 @@ class MonitorService extends EventEmitter {
       type: finding.type,
       confidence: finding.confidence,
       explicit: finding.explicit,
-      directEvidence: finding.directEvidence !== false,
       needsHumanReview: Boolean(finding.needsHumanReview),
       cycle,
       effectiveAt: finding.effective_at,

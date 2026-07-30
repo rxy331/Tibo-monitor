@@ -117,8 +117,8 @@ function sanitizeSettings(candidate, defaults) {
     ? defaults.ai.promptVersion
     : String(merged.ai.promptVersion || defaults.ai.promptVersion).trim();
   merged.ai.thinkingEnabled = Boolean(merged.ai.thinkingEnabled);
-  merged.ai.announcedThreshold = clamp(merged.ai.announcedThreshold, 0.5, 1);
-  merged.ai.completedThreshold = clamp(merged.ai.completedThreshold, 0.5, 1);
+  delete merged.ai.announcedThreshold;
+  delete merged.ai.completedThreshold;
   merged.ai.timeoutSeconds = Math.round(clamp(merged.ai.timeoutSeconds, 10, 120));
 
   merged.mail.host = String(merged.mail.host || defaults.mail.host).trim();

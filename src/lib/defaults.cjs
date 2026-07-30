@@ -1,7 +1,7 @@
 'use strict';
 
 const DEFAULT_SETTINGS = Object.freeze({
-  schemaVersion: 4,
+  schemaVersion: 5,
   x: {
     handle: 'thsottiaux',
     firefoxExecutablePath: '',
@@ -13,8 +13,6 @@ const DEFAULT_SETTINGS = Object.freeze({
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-v4-flash',
     thinkingEnabled: false,
-    announcedThreshold: 0.75,
-    completedThreshold: 0.8,
     timeoutSeconds: 30,
     promptVersion: 'reset-classifier-v2',
   },
