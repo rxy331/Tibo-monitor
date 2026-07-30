@@ -64,6 +64,7 @@ class Storage {
     this.state.events = this.state.events.slice(0, 300);
     this.state.notifications = this.state.notifications.slice(0, 300);
     this.state.pollRuns = this.state.pollRuns.slice(0, 200);
+    this.state.replayRuns = this.state.replayRuns.slice(0, 100);
     this.atomicWrite(this.paths.state, `${JSON.stringify(this.state, null, 2)}\n`);
     return this.state;
   }

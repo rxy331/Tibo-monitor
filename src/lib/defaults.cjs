@@ -1,13 +1,16 @@
 'use strict';
 
 const DEFAULT_SETTINGS = Object.freeze({
-  schemaVersion: 4,
+  schemaVersion: 5,
   x: {
     handle: 'thsottiaux',
     firefoxExecutablePath: '',
     firefoxProfilePath: '',
     pollIntervalMinutes: 15,
     fetchLimit: 30,
+    includeReplies: false,
+    startupReplayHours: 0,
+    manualReplayHours: 6,
   },
   ai: {
     baseUrl: 'https://api.deepseek.com',
@@ -29,6 +32,9 @@ const DEFAULT_SETTINGS = Object.freeze({
     announcedSubject: '[Tibo Monitor] Tibo 可能准备重置 GPT 额度',
     completedSubject: '[Tibo Monitor] GPT 额度可能已重置',
   },
+  windowsNotification: {
+    enabled: false,
+  },
   app: {
     monitoringEnabled: false,
     closeToTray: true,
@@ -38,17 +44,22 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const DEFAULT_STATE = Object.freeze({
-  schemaVersion: 2,
+  schemaVersion: 3,
   classifierVersion: 2,
   baselineEstablished: false,
   baselineCutoffId: null,
   highWaterId: null,
+  highWaterIds: {
+    originals: null,
+    replies: null,
+  },
   seenIds: [],
   posts: [],
   events: [],
   notifications: [],
   legacyAudit: null,
   pollRuns: [],
+  replayRuns: [],
   xConnection: {
     status: 'unverified',
     checkedAt: null,
@@ -76,6 +87,12 @@ const DEFAULT_STATE = Object.freeze({
     host: null,
     port: null,
     accepted: 0,
+  },
+  windowsNotificationConnection: {
+    status: 'unverified',
+    checkedAt: null,
+    message: 'Windows 通知尚未测试。',
+    supported: null,
   },
   lifecycle: {
     status: 'idle',

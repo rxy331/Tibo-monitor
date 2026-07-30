@@ -12,6 +12,8 @@ configureElectronDataPaths(app);
 app.whenReady().then(async () => {
   const keeper = new BrowserWindow({ width: 1, height: 1, show: false });
   const storage = new Storage({ documentsPath: app.getPath('documents'), safeStorage }).init();
+  const includeReplies = process.argv.includes('--include-replies');
+  if (includeReplies) storage.settings.x.includeReplies = true;
   const source = new XActionsSource({
     profilePath: storage.paths.browserProfile,
     getSettings: () => storage.settings,
@@ -20,7 +22,8 @@ app.whenReady().then(async () => {
   try {
     const result = await source.test();
     fs.mkdirSync(path.join(__dirname, '..', 'artifacts'), { recursive: true });
-    fs.writeFileSync(path.join(__dirname, '..', 'artifacts', 'x-smoke.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
+    const outputName = includeReplies ? 'x-replies-smoke.json' : 'x-smoke.json';
+    fs.writeFileSync(path.join(__dirname, '..', 'artifacts', outputName), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
     console.log(JSON.stringify(result));
   } finally {
     await source.close();

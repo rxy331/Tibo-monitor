@@ -61,6 +61,15 @@
               <p id="hero-message">完成连接测试后开启监控。首次检查只建立基线，不会为历史动态发送邮件。</p>
               <div class="hero-actions">
                 <button id="check-now" class="button primary">立即检查</button>
+                <select id="manual-replay-hours" class="compact-select" aria-label="主动复盘时段">
+                  <option value="1">复盘过去 1 小时</option>
+                  <option value="3">复盘过去 3 小时</option>
+                  <option value="6">复盘过去 6 小时</option>
+                  <option value="12">复盘过去 12 小时</option>
+                  <option value="24">复盘过去 24 小时</option>
+                  <option value="72">复盘过去 72 小时</option>
+                </select>
+                <button id="replay-now" class="button ghost">立即复盘</button>
                 <button id="quick-test-x" class="button ghost">测试 X</button>
                 <button id="quick-test-ai" class="button ghost">测试 AI</button>
               </div>
@@ -78,7 +87,8 @@
                   <span><b id="poll-fresh-count">0</b>新帖</span>
                   <span><b id="poll-event-count">0</b>新信号</span>
                   <span><b id="poll-retried-count">0</b>历史重试</span>
-                  <span><b id="poll-sent-count">0</b>已发送</span>
+                  <span><b id="poll-sent-count">0</b>邮件</span>
+                  <span><b id="poll-windows-count">0</b>系统通知</span>
                 </div>
               </div>
             </div>
@@ -152,7 +162,7 @@
         <section id="page-alerts" class="page">
           <article class="panel full-panel">
             <div class="panel-head">
-              <div><span class="section-kicker">NOTIFICATION HISTORY</span><h3>预警与邮件状态</h3></div>
+              <div><span class="section-kicker">NOTIFICATION HISTORY</span><h3>预警与通知状态</h3></div>
               <span id="alert-count" class="count-badge">0 条</span>
             </div>
             <div id="alerts-list" class="alert-list empty-state">暂时没有预警事件</div>
@@ -170,7 +180,20 @@
                   <label><span>轮询间隔（分钟）</span><input id="poll-interval" type="number" min="5" max="30" /></label>
                   <label><span>每次读取条数</span><input id="fetch-limit" type="number" min="5" max="100" /></label>
                 </div>
-                <p class="reply-policy-note">回复与纯转推始终排除，只分析 Tibo 本人原创帖。每轮只分析最近30分钟原创帖。</p>
+                <div class="form-grid two replay-settings-grid">
+                  <label><span>启动时自动复盘</span><select id="startup-replay-hours">
+                    <option value="0">关闭</option><option value="1">过去 1 小时</option><option value="3">过去 3 小时</option>
+                    <option value="6">过去 6 小时</option><option value="12">过去 12 小时</option>
+                    <option value="24">过去 24 小时</option><option value="72">过去 72 小时</option>
+                  </select></label>
+                  <label><span>“立即复盘”默认时段</span><select id="settings-manual-replay-hours">
+                    <option value="1">过去 1 小时</option><option value="3">过去 3 小时</option>
+                    <option value="6">过去 6 小时</option><option value="12">过去 12 小时</option>
+                    <option value="24">过去 24 小时</option><option value="72">过去 72 小时</option>
+                  </select></label>
+                </div>
+                <label class="checkbox-label"><input id="include-replies" type="checkbox" /><span>同时读取并分析 Tibo 本人发布的回复帖</span></label>
+                <p class="reply-policy-note">纯转推始终排除。常规轮询只分析最近 30 分钟；启动复盘和“立即复盘”使用所选时段，单次最多处理 100 条。</p>
 
                 <div class="risk-box prominent">
                   <label class="checkbox-label strong"><input id="accept-risk" type="checkbox" /><span>我了解 XActions 属于网页抓取，可能遇到登录墙、页面变化或账号限制</span></label>
@@ -243,6 +266,13 @@
                 <div class="card-actions"><button id="test-mail" type="button" class="button ghost small">发送测试邮件</button></div>
               </article>
 
+              <article class="settings-card wide">
+                <div class="settings-title"><span class="settings-icon cyan">▣</span><div><h3>Windows 系统通知</h3><p>与邮件独立启用，也可以两种方式同时提醒</p></div></div>
+                <label class="checkbox-label"><input id="windows-notification-enabled" type="checkbox" /><span>启用 Windows 通知</span></label>
+                <div id="windows-test-status" class="test-status compact" data-state="idle" aria-live="polite"><span class="test-status-dot"></span><div><b id="windows-test-status-title">Windows 通知尚未测试</b><p id="windows-test-status-message">测试时会显示一条系统通知，并注册开始菜单快捷方式。</p></div></div>
+                <div class="card-actions"><button id="test-windows-notification" type="button" class="button ghost small">发送测试通知</button></div>
+              </article>
+
               <article class="settings-card wide compact-card">
                 <div class="settings-title"><span class="settings-icon amber">⌘</span><div><h3>Windows 与本地存储</h3><p id="data-path">文档\Tibo Monitor</p></div></div>
                 <div class="form-grid two behavior-grid">
@@ -265,7 +295,7 @@
         <section id="page-about" class="page">
           <article class="about-hero panel">
             <img src="../../assets/app-icon.png" alt="Tibo Monitor 图标" />
-            <div><span class="section-kicker">TIBO MONITOR · 0.1.13</span><h2>一个安静守候重置信号的本地工具</h2><p>监控 @thsottiaux 的公开 X 动态，使用 DeepSeek V4 Flash 判断“准备重置”和“已经重置”两类事件，并通过邮件提醒。</p><button class="text-button external" data-url="https://space.bilibili.com/6398431">作者社交主页 →</button></div>
+            <div><span class="section-kicker">TIBO MONITOR · 0.1.13</span><h2>一个安静守候重置信号的本地工具</h2><p>监控 @thsottiaux 的公开 X 动态，使用 DeepSeek V4 Flash 判断“准备重置”和“已经重置”两类事件，并通过 Windows 通知或邮件提醒。</p><button class="text-button external" data-url="https://space.bilibili.com/6398431">作者社交主页 →</button></div>
           </article>
           <div class="about-grid">
             <article class="panel"><h3>隐私与存储</h3><p>配置、历史、日志和 DPAPI 加密密钥位于“文档\Tibo Monitor”。登录资料仍归 Firefox 管理；轮询仅创建临时只读快照并在结束后删除。</p></article>

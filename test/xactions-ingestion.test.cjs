@@ -348,16 +348,17 @@ test('unverified pages leave reply state unknown for fail-closed filtering', asy
   assert.equal(state.profilePostsVerified, false);
   assert.equal(state.tweets[0].isReply, null);
   assert.equal(isTargetProfilePostsUrl('https://x.com/Tibo/with_replies', 'tibo'), false);
+  assert.equal(isTargetProfilePostsUrl('https://x.com/Tibo/with_replies', 'tibo', true), true);
 });
 
-test('scraper always visits profile Posts and returns target originals only', async () => {
+test('scraper visits with_replies and returns target originals plus replies when enabled', async () => {
   const page = fixturePage(buildTimelineFixture(), 'about:blank');
   const posts = await scrapeRecentTweets(page, '@Tibo', { limit: 4, includeReplies: true, includeRetweets: true });
 
-  assert.deepEqual(page.visits, ['https://x.com/tibo']);
-  assert.equal(page.visits[0].includes('/with_replies'), false);
-  assert.deepEqual(posts.map((post) => post.id), ['600', '550', '500', '100']);
-  assert.equal(posts.every((post) => post.author === 'tibo' && post.isReply === false && post.isRetweet === false), true);
+  assert.deepEqual(page.visits, ['https://x.com/tibo/with_replies']);
+  assert.deepEqual(posts.map((post) => post.id), ['800', '600', '550', '500']);
+  assert.equal(posts.every((post) => post.author === 'tibo' && post.isRetweet === false), true);
+  assert.deepEqual(posts.find((post) => post.id === '800').replyTo, ['outside_parent']);
   assert.equal(posts.find((post) => post.id === '600').text, 'new original');
 });
 
@@ -396,7 +397,7 @@ test('scraper scrolls past thirty rejected rows until five accepted originals ar
   assert.equal(posts.every((post) => post.author === 'tibo' && post.isReply === false && post.isRetweet === false), true);
 });
 
-test('source always excludes replies and reposts regardless of legacy settings', async () => {
+test('source includes target replies when enabled while excluding reposts and unknown reply state', async () => {
   const extracted = await evaluateTimeline(fixturePage(buildTimelineFixture()), 'Tibo');
   const settings = {
     x: {
@@ -421,6 +422,15 @@ test('source always excludes replies and reposts regardless of legacy settings',
     return [
       ...extracted.tweets,
       {
+        id: '575',
+        author: 'tibo',
+        text: 'target reply inside the active window',
+        timestamp: '2026-07-28T05:50:00.000Z',
+        isReply: true,
+        replyTo: ['someone'],
+        isRetweet: false,
+      },
+      {
         id: '650',
         author: 'tibo',
         text: 'unknown reply state',
@@ -440,9 +450,11 @@ test('source always excludes replies and reposts regardless of legacy settings',
   };
 
   const posts = await source._fetchLatest({ limit: 20 });
-  assert.equal(Object.hasOwn(scrapeOptions, 'includeReplies'), false);
-  assert.deepEqual(posts.map((post) => post.id), ['600', '550', '500']);
-  assert.equal(posts.every((post) => post.author === 'tibo' && post.isReply === false && post.isRetweet === false), true);
+  assert.equal(scrapeOptions.includeReplies, true);
+  assert.deepEqual(posts.map((post) => post.id), ['600', '575', '550', '500']);
+  assert.equal(posts.every((post) => post.author === 'tibo' && post.isRetweet === false), true);
+  assert.deepEqual(posts.find((post) => post.id === '575').replyTo, ['someone']);
+  assert.equal(posts.some((post) => post.id === '650'), false);
   assert.equal(posts.find((post) => post.id === '500').text, 'outer quote commentary');
 });
 
@@ -494,6 +506,7 @@ test('source applies inclusive thirty-minute and two-minute-skew boundaries with
   assert.equal(posts.newestAt, '2026-07-28T12:02:00.000Z');
   assert.deepEqual(source.lastFetchMetadata, {
     observedHighWaterId: '900',
+    observedHighWaterIds: { originals: '900', replies: null },
     newestAt: '2026-07-28T12:02:00.000Z',
   });
   assert.equal(posts.every((post) => post.timestamp === post.tweetAt && post.tweetAt === post.createdAt), true);
@@ -512,7 +525,11 @@ test('an empty recent window retains the maximum observed snowflake and has null
   assert.equal(posts.length, 0);
   assert.equal(posts.observedHighWaterId, '1100');
   assert.equal(posts.newestAt, null);
-  assert.deepEqual(source.lastFetchMetadata, { observedHighWaterId: '1100', newestAt: null });
+  assert.deepEqual(source.lastFetchMetadata, {
+    observedHighWaterId: '1100',
+    observedHighWaterIds: { originals: '1100', replies: null },
+    newestAt: null,
+  });
 });
 
 test('newest metadata takes the maximum timestamp rather than DOM position', () => {

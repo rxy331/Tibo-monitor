@@ -38,10 +38,10 @@ function postTimestamp(post) {
   return post?.tweetAt || post?.createdAt || post?.timestamp || null;
 }
 
-function isPostInsideRecentWindow(post, nowMilliseconds) {
+function isPostInsideRecentWindow(post, nowMilliseconds, windowMilliseconds = RECENT_POST_WINDOW_MS) {
   const timestampMilliseconds = Date.parse(postTimestamp(post) || '');
   return Number.isFinite(timestampMilliseconds) &&
-    timestampMilliseconds >= nowMilliseconds - RECENT_POST_WINDOW_MS &&
+    timestampMilliseconds >= nowMilliseconds - windowMilliseconds &&
     timestampMilliseconds <= nowMilliseconds + FUTURE_CLOCK_SKEW_MS;
 }
 
@@ -51,6 +51,12 @@ function attachPostMetadata(posts, metadata) {
       configurable: false,
       enumerable: false,
       value: metadata.observedHighWaterId || null,
+      writable: false,
+    },
+    observedHighWaterIds: {
+      configurable: false,
+      enumerable: false,
+      value: metadata.observedHighWaterIds || { originals: metadata.observedHighWaterId || null, replies: null },
       writable: false,
     },
     newestAt: {
@@ -186,7 +192,11 @@ class XActionsSource {
     this.preferredProfilePath = null;
     this.lastBrowserLabel = null;
     this.scrapeTweets = scrapeRecentTweets;
-    this.lastFetchMetadata = { observedHighWaterId: null, newestAt: null };
+    this.lastFetchMetadata = {
+      observedHighWaterId: null,
+      observedHighWaterIds: { originals: null, replies: null },
+      newestAt: null,
+    };
   }
 
   selectedBrowser() {
@@ -405,8 +415,17 @@ class XActionsSource {
     }
   }
 
-  async _fetchLatest({ limit, confirmLogin = false } = {}) {
+  async _fetchLatest({
+    limit,
+    confirmLogin = false,
+    includeReplies,
+    lookbackMinutes = 30,
+  } = {}) {
     const settings = this.getSettings().x;
+    const shouldIncludeReplies = includeReplies === undefined
+      ? Boolean(settings.includeReplies)
+      : Boolean(includeReplies);
+    const normalizedLookbackMinutes = Math.max(30, Math.min(72 * 60, Number(lookbackMinutes) || 30));
     const candidates = this.candidateProfiles();
     const failures = [];
     for (const [index, profile] of candidates.entries()) {
@@ -414,17 +433,24 @@ class XActionsSource {
         await this.start(profile);
       const posts = await this.scrapeTweets(this.page, settings.handle, {
         limit: Number(limit || settings.fetchLimit),
+        includeReplies: shouldIncludeReplies,
       });
       await this.inspectHealth(posts);
       const targetHandle = normalizeTargetHandle(settings.handle);
       const fetchLimit = Number(limit || settings.fetchLimit);
-      const observedOriginals = dedupeAndSortTweets(posts
+      const observedTargets = dedupeAndSortTweets(posts
         .filter((post) => post?.id)
         .filter((post) => normalizeTargetHandle(post.author) === targetHandle)
-        .filter((post) => post.isReply === false)
-        .filter((post) => post.isRetweet === false), fetchLimit);
+        .filter((post) => post.isRetweet === false)
+        .filter((post) => post.isReply === false || (shouldIncludeReplies && post.isReply === true)), fetchLimit);
+      const observedOriginals = observedTargets.filter((post) => post.isReply === false);
+      const observedReplies = observedTargets.filter((post) => post.isReply === true);
       const observedHighWaterId = observedOriginals[0]?.id ? String(observedOriginals[0].id) : null;
-      const normalized = observedOriginals
+      const observedHighWaterIds = {
+        originals: observedHighWaterId,
+        replies: observedReplies[0]?.id ? String(observedReplies[0].id) : null,
+      };
+      const normalized = observedTargets
         .filter((post) => Boolean(String(post?.text || '').trim()))
         .map((post) => ({
           id: String(post.id),
@@ -439,17 +465,23 @@ class XActionsSource {
           replies: Number(post.replies || 0),
           views: Number(post.views || 0),
           isQuote: Boolean(post.isQuote),
-          isReply: false,
+          isReply: post.isReply === true,
+          replyTo: Array.isArray(post.replyTo) ? post.replyTo.map(String) : [],
           isRetweet: false,
         }));
       const nowMilliseconds = Number(this.now());
       if (!Number.isFinite(nowMilliseconds)) throw new TypeError('Injected X source clock returned an invalid value.');
       const recentPosts = dedupeAndSortTweets(
-        normalized.filter((post) => isPostInsideRecentWindow(post, nowMilliseconds)),
+        normalized.filter((post) => isPostInsideRecentWindow(
+          post,
+          nowMilliseconds,
+          normalizedLookbackMinutes * 60 * 1000,
+        )),
         fetchLimit,
       );
       const metadata = {
         observedHighWaterId,
+        observedHighWaterIds,
         newestAt: newestPostTimestamp(recentPosts),
       };
       this.lastFetchMetadata = metadata;

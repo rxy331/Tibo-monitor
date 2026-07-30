@@ -20,6 +20,8 @@ const FUTURE_POST_TOLERANCE_MS = 2 * 60 * 1000;
 const SAME_TYPE_SUPPRESSION_WINDOW_MS = 60 * 60 * 1000;
 const ANALYSIS_RETRY_MINUTES = [1, 5, 15, 60];
 const RETRYABLE_NOTIFICATION_STATUSES = new Set(['pending', 'failed', 'error', 'sending']);
+const REPLAY_HOURS = new Set([1, 3, 6, 12, 24, 72]);
+const REPLAY_POST_LIMIT = 100;
 const HISTORICAL_NOTIFICATION_STATUSES = new Set([
   ...RETRYABLE_NOTIFICATION_STATUSES,
   'waiting_for_mail_config',
@@ -51,21 +53,46 @@ function normalizeFetchResult(result) {
     return {
       posts: result,
       observedHighWaterId: normalizeObservedHighWaterId(result.observedHighWaterId),
+      observedHighWaterIds: {
+        originals: normalizeObservedHighWaterId(
+          result.observedHighWaterIds?.originals || result.observedHighWaterId,
+        ),
+        replies: normalizeObservedHighWaterId(result.observedHighWaterIds?.replies),
+      },
     };
   }
   if (!result || typeof result !== 'object') {
-    return { posts: [], observedHighWaterId: null };
+    return {
+      posts: [],
+      observedHighWaterId: null,
+      observedHighWaterIds: { originals: null, replies: null },
+    };
   }
   return {
     posts: Array.isArray(result.posts) ? result.posts : [],
     observedHighWaterId: normalizeObservedHighWaterId(result.observedHighWaterId),
+    observedHighWaterIds: {
+      originals: normalizeObservedHighWaterId(
+        result.observedHighWaterIds?.originals || result.observedHighWaterId,
+      ),
+      replies: normalizeObservedHighWaterId(result.observedHighWaterIds?.replies),
+    },
   };
 }
 
-function isPostWithinMonitoringWindow(post, now = Date.now()) {
+function postScope(post) {
+  return post?.isReply === true ? 'replies' : 'originals';
+}
+
+function isSelectedTargetPost(post, settings) {
+  return isTargetAuthoredPost(post, settings.x.handle) &&
+    (post?.isReply !== true || (settings.x.includeReplies && post?.isReply === true));
+}
+
+function isPostWithinMonitoringWindow(post, now = Date.now(), windowMilliseconds = RECENT_POST_WINDOW_MS) {
   const timestamp = Date.parse(post?.timestamp);
   return Number.isFinite(timestamp) &&
-    timestamp >= now - RECENT_POST_WINDOW_MS &&
+    timestamp >= now - windowMilliseconds &&
     timestamp <= now + FUTURE_POST_TOLERANCE_MS;
 }
 
@@ -126,12 +153,13 @@ function rebaseSettingsSnapshot(current, base, requested) {
 }
 
 class MonitorService extends EventEmitter {
-  constructor({ storage, source, ai, mailer, now = () => Date.now() }) {
+  constructor({ storage, source, ai, mailer, windowsNotifier = null, now = () => Date.now() }) {
     super();
     this.storage = storage;
     this.source = source;
     this.ai = ai;
     this.mailer = mailer;
+    this.windowsNotifier = windowsNotifier;
     this.now = now;
     this.timer = null;
     this.busy = false;
@@ -151,9 +179,13 @@ class MonitorService extends EventEmitter {
       newEventCount: 0,
       retriedCount: 0,
       sentCount: 0,
+      windowsShownCount: 0,
+      replayCount: 0,
       outOfWindowCount: 0,
     };
     this.migrateStateV2();
+    this.migrateStateV3();
+    this.startupReplayPending = Number(this.storage.settings.x.startupReplayHours || 0) > 0;
   }
 
   migrateStateV2() {
@@ -243,6 +275,31 @@ class MonitorService extends EventEmitter {
     return true;
   }
 
+  migrateStateV3() {
+    const state = this.storage.state;
+    if (Number(state.schemaVersion || 0) >= 3) return false;
+    const originalHighWater = normalizeObservedHighWaterId(state.highWaterId);
+    state.highWaterIds = {
+      originals: normalizeObservedHighWaterId(state.highWaterIds?.originals) || originalHighWater,
+      replies: normalizeObservedHighWaterId(state.highWaterIds?.replies),
+    };
+    state.highWaterId = state.highWaterIds.originals;
+    state.replayRuns = Array.isArray(state.replayRuns) ? state.replayRuns : [];
+    for (const notification of state.notifications || []) {
+      if (!notification.channel) notification.channel = 'mail';
+    }
+    for (const event of state.events || []) {
+      if (!event.windowsNotificationStatus) event.windowsNotificationStatus = 'not_selected';
+    }
+    state.windowsNotificationConnection = {
+      ...structuredClone(DEFAULT_STATE.windowsNotificationConnection),
+      ...(state.windowsNotificationConnection || {}),
+    };
+    state.schemaVersion = 3;
+    this.storage.saveState();
+    return true;
+  }
+
   snapshot() {
     return {
       ...this.storage.getPublicSnapshot(),
@@ -261,6 +318,7 @@ class MonitorService extends EventEmitter {
       String(x.firefoxExecutablePath || ''),
       String(x.firefoxProfilePath || ''),
       Number(x.fetchLimit || 0),
+      Boolean(x.includeReplies),
     ]);
   }
 
@@ -291,6 +349,7 @@ class MonitorService extends EventEmitter {
     this.storage.state.baselineEstablished = false;
     this.storage.state.baselineCutoffId = null;
     this.storage.state.highWaterId = null;
+    this.storage.state.highWaterIds = { originals: null, replies: null };
     this.storage.state.seenIds = [];
     this.storage.state.posts = [];
     this.storage.state.events = [];
@@ -458,6 +517,9 @@ class MonitorService extends EventEmitter {
       reason: finding.reason,
       createdAt: new Date().toISOString(),
       notificationStatus: this.shouldNotify(finding) ? 'pending' : 'not_required',
+      windowsNotificationStatus: this.shouldNotify(finding)
+        ? (this.storage.settings.windowsNotification.enabled ? 'pending' : 'not_selected')
+        : 'not_required',
     };
     this.storage.state.events.unshift(event);
     this.applyLifecycle(event);
@@ -499,11 +561,18 @@ class MonitorService extends EventEmitter {
       }
       this.storage.saveState();
       let sentCount = 0;
-      for (const event of created.filter((item) => item.notificationStatus === 'pending')) {
-        const delivery = await this.deliverEvent(event, post);
-        if (delivery.sent) sentCount += 1;
+      let windowsShownCount = 0;
+      for (const event of created) {
+        if (event.notificationStatus === 'pending') {
+          const delivery = await this.deliverEvent(event, post);
+          if (delivery.sent) sentCount += 1;
+        }
+        if (event.windowsNotificationStatus === 'pending') {
+          const delivery = await this.deliverWindowsEvent(event, post);
+          if (delivery.shown) windowsShownCount += 1;
+        }
       }
-      return { newEventCount: created.length, sentCount };
+      return { newEventCount: created.length, sentCount, windowsShownCount };
     } catch (error) {
       postRecord.analysisStatus = 'error';
       postRecord.classifierVersion = CLASSIFIER_VERSION;
@@ -516,7 +585,7 @@ class MonitorService extends EventEmitter {
       postRecord.nextAnalysisAttemptAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
       this.storage.log('error', `Analysis failed for post ${post.id}: ${safeError(error)}`);
       this.storage.saveState();
-      return { newEventCount: 0, sentCount: 0, error: safeError(error) };
+      return { newEventCount: 0, sentCount: 0, windowsShownCount: 0, error: safeError(error) };
     }
   }
 
@@ -527,7 +596,8 @@ class MonitorService extends EventEmitter {
       return { attempted: false, sent: false, waitingForMailConfig: true };
     }
     if (this.mailAuthCircuitOpen) return { attempted: false, sent: false, authCircuitOpen: true };
-    const existing = this.storage.state.notifications.find((item) => item.eventId === event.id);
+    const existing = this.storage.state.notifications.find((item) =>
+      item.eventId === event.id && (!item.channel || item.channel === 'mail'));
     if (existing?.status === 'sent') return { attempted: false, sent: false, alreadySent: true };
     if (existing?.status === 'superseded' || event.notificationStatus === 'superseded') {
       return { attempted: false, sent: false, superseded: true };
@@ -537,6 +607,7 @@ class MonitorService extends EventEmitter {
       classifierVersion: CLASSIFIER_VERSION,
       eventId: event.id,
       postId: post.id,
+      channel: 'mail',
       status: 'pending',
       attempts: 0,
       createdAt: new Date().toISOString(),
@@ -573,9 +644,65 @@ class MonitorService extends EventEmitter {
     }
   }
 
+  async deliverWindowsEvent(event, post) {
+    if (!this.storage.settings.windowsNotification.enabled) {
+      event.windowsNotificationStatus = 'not_selected';
+      this.storage.saveState();
+      return { attempted: false, shown: false, notSelected: true };
+    }
+    if (!this.windowsNotifier) {
+      event.windowsNotificationStatus = 'failed';
+      this.storage.saveState();
+      return { attempted: false, shown: false, unavailable: true };
+    }
+    const existing = this.storage.state.notifications.find((item) =>
+      item.eventId === event.id && item.channel === 'windows');
+    if (existing?.status === 'shown') return { attempted: false, shown: false, alreadyShown: true };
+    if (existing?.status === 'superseded' || event.windowsNotificationStatus === 'superseded') {
+      return { attempted: false, shown: false, superseded: true };
+    }
+    const notification = existing || {
+      id: id('win'),
+      classifierVersion: CLASSIFIER_VERSION,
+      eventId: event.id,
+      postId: post.id,
+      channel: 'windows',
+      status: 'pending',
+      attempts: 0,
+      createdAt: new Date().toISOString(),
+      nextAttemptAt: null,
+    };
+    if (!existing) this.storage.state.notifications.unshift(notification);
+    notification.attempts = Number(notification.attempts || 0) + 1;
+    notification.status = 'sending';
+    notification.lastAttemptAt = new Date().toISOString();
+    notification.nextAttemptAt = null;
+    notification.lastError = null;
+    event.windowsNotificationStatus = 'pending';
+    this.storage.saveState();
+    try {
+      await this.windowsNotifier.show(event, post);
+      notification.status = 'shown';
+      notification.shownAt = new Date().toISOString();
+      event.windowsNotificationStatus = 'shown';
+      this.storage.saveState();
+      return { attempted: true, shown: true };
+    } catch (error) {
+      notification.status = 'failed';
+      notification.lastError = safeError(error);
+      const waits = [1, 5, 15, 60];
+      const minutes = waits[Math.min(notification.attempts - 1, waits.length - 1)];
+      notification.nextAttemptAt = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+      event.windowsNotificationStatus = 'failed';
+      this.storage.saveState();
+      return { attempted: true, shown: false };
+    }
+  }
+
   async retryPendingNotifications() {
     const now = Date.now();
     const pendingMail = this.storage.state.notifications.filter((item) =>
+      (!item.channel || item.channel === 'mail') &&
       RETRYABLE_NOTIFICATION_STATUSES.has(item.status) && (
         item.status === 'sending' ||
         !item.nextAttemptAt ||
@@ -599,7 +726,8 @@ class MonitorService extends EventEmitter {
     if (this.mailAuthCircuitOpen) return { retriedCount, sentCount, authCircuitOpen: true };
     const orphanedEvents = this.storage.state.events.filter((event) =>
       ['pending', 'failed', 'error', 'sending'].includes(event.notificationStatus) &&
-      !this.storage.state.notifications.some((notification) => notification.eventId === event.id),
+      !this.storage.state.notifications.some((notification) =>
+        notification.eventId === event.id && (!notification.channel || notification.channel === 'mail')),
     ).sort((left, right) => compareTweetIds(left.postId, right.postId));
     for (const event of orphanedEvents) {
       const post = this.storage.state.posts.find((item) => item.post.id === event.postId)?.post;
@@ -626,23 +754,71 @@ class MonitorService extends EventEmitter {
     return { retriedCount, sentCount, authCircuitOpen: this.mailAuthCircuitOpen };
   }
 
-  async retryPending({ postRecords = [], retryNotifications = this.storage.settings.app.monitoringEnabled } = {}) {
+  async retryPendingWindowsNotifications() {
+    if (!this.storage.settings.windowsNotification.enabled) {
+      return { retriedCount: 0, shownCount: 0 };
+    }
+    const now = Date.now();
+    const pending = this.storage.state.notifications.filter((item) =>
+      item.channel === 'windows' &&
+      RETRYABLE_NOTIFICATION_STATUSES.has(item.status) && (
+        item.status === 'sending' ||
+        !item.nextAttemptAt ||
+        !Number.isFinite(Date.parse(item.nextAttemptAt)) ||
+        Date.parse(item.nextAttemptAt) <= now
+      ),
+    ).sort((left, right) => compareTweetIds(left.postId, right.postId));
+    let retriedCount = 0;
+    let shownCount = 0;
+    for (const notification of pending) {
+      const event = this.storage.state.events.find((item) => item.id === notification.eventId);
+      const post = this.storage.state.posts.find((item) => item.post.id === notification.postId)?.post;
+      if (!event || !post) continue;
+      const delivery = await this.deliverWindowsEvent(event, post);
+      if (delivery.attempted) retriedCount += 1;
+      if (delivery.shown) shownCount += 1;
+    }
+    const orphanedEvents = this.storage.state.events.filter((event) =>
+      ['pending', 'failed', 'error', 'sending'].includes(event.windowsNotificationStatus) &&
+      !this.storage.state.notifications.some((notification) =>
+        notification.eventId === event.id && notification.channel === 'windows'),
+    ).sort((left, right) => compareTweetIds(left.postId, right.postId));
+    for (const event of orphanedEvents) {
+      const post = this.storage.state.posts.find((item) => item.post.id === event.postId)?.post;
+      if (!post) continue;
+      const delivery = await this.deliverWindowsEvent(event, post);
+      if (delivery.attempted) retriedCount += 1;
+      if (delivery.shown) shownCount += 1;
+    }
+    return { retriedCount, shownCount };
+  }
+
+  async retryPending({
+    postRecords = [],
+    retryNotifications = this.storage.settings.app.monitoringEnabled,
+    forceCreateEvents = false,
+  } = {}) {
     let newEventCount = 0;
     let sentCount = 0;
+    let windowsShownCount = 0;
     const cutoff = this.storage.state.baselineCutoffId;
     for (const post of [...postRecords].sort(postRecordAscending)) {
-      const createEvents = !cutoff || compareTweetIds(post.post.id, cutoff) > 0;
+      const createEvents = forceCreateEvents || !cutoff || compareTweetIds(post.post.id, cutoff) > 0;
       const outcome = await this.analyzePost(post, { createEvents });
       newEventCount += outcome.newEventCount;
       sentCount += outcome.sentCount;
+      windowsShownCount += outcome.windowsShownCount;
     }
     let retriedCount = 0;
     if (retryNotifications) {
       const retried = await this.retryPendingNotifications();
       retriedCount += retried.retriedCount;
       sentCount += retried.sentCount;
+      const windowsRetried = await this.retryPendingWindowsNotifications();
+      retriedCount += windowsRetried.retriedCount;
+      windowsShownCount += windowsRetried.shownCount;
     }
-    return { newEventCount, sentCount, retriedCount };
+    return { newEventCount, sentCount, windowsShownCount, retriedCount };
   }
 
   pendingV2AnalysisRecords(now = Date.now()) {
@@ -666,15 +842,31 @@ class MonitorService extends EventEmitter {
     run.newEventCount = Number(run?.newEventCount || 0);
     run.retriedCount = Number(run?.retriedCount || 0);
     run.sentCount = Number(run?.sentCount || 0);
+    run.windowsShownCount = Number(run?.windowsShownCount || 0);
+    run.replayCount = Number(run?.replayCount || 0);
     run.outOfWindowCount = Number(run?.outOfWindowCount || 0);
     this.status.newCount = freshCount;
     this.status.newEventCount = run.newEventCount;
     this.status.retriedCount = run.retriedCount;
     this.status.sentCount = run.sentCount;
+    this.status.windowsShownCount = run.windowsShownCount;
+    this.status.replayCount = run.replayCount;
     this.status.outOfWindowCount = run.outOfWindowCount;
   }
 
-  async checkNow(reason = 'manual') {
+  async replayNow(hours) {
+    const replayHours = Math.round(Number(hours));
+    if (!REPLAY_HOURS.has(replayHours)) {
+      return {
+        ok: false,
+        code: 'INVALID_REPLAY_WINDOW',
+        message: '复盘时段必须是 1、3、6、12、24 或 72 小时。',
+      };
+    }
+    return this.checkNow('manual-replay', { replayHours, manualReplay: true });
+  }
+
+  async checkNow(reason = 'manual', options = {}) {
     if (this.closing) {
       return { ok: false, skipped: true, code: 'MONITOR_CLOSING', message: '监控正在关闭。' };
     }
@@ -683,17 +875,33 @@ class MonitorService extends EventEmitter {
       return { ok: false, skipped: true, code: 'X_RISK_NOT_ACCEPTED', message: X_RISK_NOT_ACCEPTED_MESSAGE };
     }
     if (this.busy) return { ok: false, message: '检查已在进行中。' };
+    const requestedReplayHours = Math.round(Number(options.replayHours || 0));
+    const startupReplayHours = this.startupReplayPending
+      ? Math.round(Number(this.storage.settings.x.startupReplayHours || 0))
+      : 0;
+    const replayHours = REPLAY_HOURS.has(requestedReplayHours)
+      ? requestedReplayHours
+      : REPLAY_HOURS.has(startupReplayHours)
+        ? startupReplayHours
+        : 0;
+    const replayMode = replayHours
+      ? (options.manualReplay ? 'manual' : 'startup')
+      : null;
     this.busy = true;
     this.mailAuthCircuitOpen = false;
     clearTimeout(this.timer);
     this.status.busy = true;
     this.status.phase = 'checking';
     this.status.lastError = null;
-    this.status.lastMessage = '正在读取 Tibo 的最新动态…';
+    this.status.lastMessage = replayHours
+      ? `正在复盘 Tibo 过去 ${replayHours} 小时的动态…`
+      : '正在读取 Tibo 的最新动态…';
     this.status.newCount = 0;
     this.status.newEventCount = 0;
     this.status.retriedCount = 0;
     this.status.sentCount = 0;
+    this.status.windowsShownCount = 0;
+    this.status.replayCount = 0;
     this.status.outOfWindowCount = 0;
     this.emitUpdate();
     const run = {
@@ -707,23 +915,49 @@ class MonitorService extends EventEmitter {
       newEventCount: 0,
       retriedCount: 0,
       sentCount: 0,
+      windowsShownCount: 0,
+      replayCount: 0,
       outOfWindowCount: 0,
+      ...(replayHours ? { replayHours, replayMode } : {}),
     };
     this.storage.state.pollRuns.unshift(run);
+    const replayRun = replayHours ? {
+      id: id('replay'),
+      pollRunId: run.id,
+      mode: replayMode,
+      hours: replayHours,
+      startedAt: run.startedAt,
+      outcome: 'running',
+      reviewedCount: 0,
+      truncated: false,
+    } : null;
+    if (replayRun) this.storage.state.replayRuns.unshift(replayRun);
     try {
       if (this.storage.settings.app.monitoringEnabled) {
         const retried = await this.retryPendingNotifications();
         run.retriedCount += retried.retriedCount;
         run.sentCount += retried.sentCount;
+        const windowsRetried = await this.retryPendingWindowsNotifications();
+        run.retriedCount += windowsRetried.retriedCount;
+        run.windowsShownCount += windowsRetried.shownCount;
       }
       const sourceFingerprint = this.xSourceFingerprint();
-      const fetchResult = await this.source.fetchLatest();
-      const { posts, observedHighWaterId } = normalizeFetchResult(fetchResult);
+      const fetchResult = await this.source.fetchLatest({
+        limit: replayHours ? REPLAY_POST_LIMIT : this.storage.settings.x.fetchLimit,
+        lookbackMinutes: replayHours ? replayHours * 60 : 30,
+        includeReplies: this.storage.settings.x.includeReplies,
+      });
+      const { posts, observedHighWaterId, observedHighWaterIds } = normalizeFetchResult(fetchResult);
       if (sourceFingerprint !== this.xSourceFingerprint()) {
         run.outcome = 'skipped';
         run.skipReason = 'settings_changed';
         run.discardedCount = posts.length;
         run.finishedAt = new Date().toISOString();
+        if (replayRun) {
+          replayRun.outcome = 'skipped';
+          replayRun.finishedAt = run.finishedAt;
+          replayRun.skipReason = run.skipReason;
+        }
         this.status.lastCheckAt = run.finishedAt;
         this.status.fetchedCount = 0;
         this.status.newCount = 0;
@@ -746,11 +980,22 @@ class MonitorService extends EventEmitter {
       }
       run.fetchedCount = posts.length;
       this.status.fetchedCount = posts.length;
-      const targetObservedPosts = posts.filter((post) => isTargetAuthoredPost(post, this.storage.settings.x.handle));
+      const targetObservedPosts = posts.filter((post) => isSelectedTargetPost(post, this.storage.settings));
       const windowNow = Number(this.now());
-      const targetPosts = targetObservedPosts.filter((post) => isPostWithinMonitoringWindow(post, windowNow));
-      run.outOfWindowCount = targetObservedPosts.length - targetPosts.length;
-      const observedWatermark = observedHighWaterId || maxTweetId(targetObservedPosts);
+      const monitoringWindow = replayHours ? replayHours * 60 * 60 * 1000 : RECENT_POST_WINDOW_MS;
+      const windowPosts = targetObservedPosts
+        .filter((post) => isPostWithinMonitoringWindow(post, windowNow, monitoringWindow));
+      const targetPosts = windowPosts.slice(0, replayHours ? REPLAY_POST_LIMIT : undefined);
+      run.outOfWindowCount = targetObservedPosts.length - windowPosts.length;
+      const observedWatermarks = {
+        originals: observedHighWaterIds.originals ||
+          observedHighWaterId ||
+          maxTweetId(targetObservedPosts.filter((post) => postScope(post) === 'originals')),
+        replies: observedHighWaterIds.replies ||
+          maxTweetId(targetObservedPosts.filter((post) => postScope(post) === 'replies')),
+      };
+      const observedWatermark = observedWatermarks.originals;
+      if (replayRun) replayRun.truncated = windowPosts.length >= REPLAY_POST_LIMIT;
       const newestPost = sortTweetIdsDescending(targetPosts)[0] || null;
       this.updateXConnection('connected', `登录有效，已读取 ${targetPosts.length} 条目标账号动态。`, {
         browser: this.source.lastBrowserLabel || this.source.browserLabel || this.storage.state.xConnection.browser || null,
@@ -758,18 +1003,33 @@ class MonitorService extends EventEmitter {
         newestAt: newestPost?.timestamp || null,
       });
 
-      if (!this.storage.state.baselineEstablished || !this.storage.state.highWaterId) {
-        const baselineHighWater = observedWatermark || maxTweetId(targetPosts);
+      if (
+        !this.storage.state.baselineEstablished ||
+        !(this.storage.state.highWaterIds?.originals || this.storage.state.highWaterId)
+      ) {
+        const baselineHighWater = observedWatermark;
         this.storage.state.seenIds = targetPosts.map((post) => String(post.id)).slice(0, 500);
         this.storage.state.baselineEstablished = Boolean(baselineHighWater);
         this.storage.state.baselineCutoffId = baselineHighWater;
         this.storage.state.highWaterId = baselineHighWater;
+        this.storage.state.highWaterIds = {
+          originals: baselineHighWater,
+          replies: observedWatermarks.replies,
+        };
         this.storage.state.classifierVersion = CLASSIFIER_VERSION;
         const baselineRecords = [];
         for (const post of targetPosts) {
           const existing = this.storage.state.posts.find((item) => item.post.id === post.id);
           if (existing) {
-            if (['pending', 'error'].includes(existing.analysisStatus)) baselineRecords.push(existing);
+            if (
+              ['pending', 'error'].includes(existing.analysisStatus) ||
+              (replayHours && existing.analysis?.historicalBaseline && !existing.replayReviewedAt)
+            ) {
+              existing.post = post;
+              existing.analysisStatus = 'pending';
+              existing.nextAnalysisAttemptAt = null;
+              baselineRecords.push(existing);
+            }
             continue;
           }
           const record = {
@@ -788,34 +1048,71 @@ class MonitorService extends EventEmitter {
         const analyzed = await this.retryPending({
           postRecords: baselineRecords,
           retryNotifications: false,
+          forceCreateEvents: Boolean(replayHours),
         });
         run.newEventCount += analyzed.newEventCount;
         run.sentCount += analyzed.sentCount;
+        run.windowsShownCount += analyzed.windowsShownCount;
+        run.replayCount = replayHours ? baselineRecords.length : 0;
+        for (const record of baselineRecords) {
+          if (replayHours && record.analysisStatus === 'complete') {
+            record.replayReviewedAt = new Date().toISOString();
+          }
+        }
         this.storage.state.posts.sort(postRecordDescending);
         run.outcome = baselineHighWater ? 'baseline' : 'baseline_pending';
         this.status.newCount = 0;
         this.status.lastMessage = baselineHighWater
-          ? `基线已建立：已调用大模型分析 ${baselineRecords.length} 条现有动态，不发送历史提醒。`
+          ? replayHours
+            ? `基线已建立并主动复盘过去 ${replayHours} 小时：处理 ${baselineRecords.length} 条动态，生成 ${run.newEventCount} 条新信号。`
+            : `基线已建立：已调用大模型分析 ${baselineRecords.length} 条现有动态，不发送历史提醒。`
           : '本轮未读取到目标账号动态，安全基线尚未建立；不会发送历史提醒。';
         if (run.sentCount) this.status.lastMessage += ` 本轮另补发 ${run.sentCount} 封历史提醒。`;
       } else {
         const seen = new Set(this.storage.state.seenIds);
-        const previousHighWater = this.storage.state.highWaterId;
-        const freshCandidates = sortTweetIdsAscending(targetPosts.filter((post) =>
-          !seen.has(String(post.id)) &&
-          (!previousHighWater || compareTweetIds(post.id, previousHighWater) > 0),
-        ));
+        const previousHighWaterIds = {
+          originals: normalizeObservedHighWaterId(this.storage.state.highWaterIds?.originals) ||
+            normalizeObservedHighWaterId(this.storage.state.highWaterId),
+          replies: normalizeObservedHighWaterId(this.storage.state.highWaterIds?.replies),
+        };
+        const freshCandidates = replayHours
+          ? []
+          : sortTweetIdsAscending(targetPosts.filter((post) => {
+            const scope = postScope(post);
+            const previousHighWater = previousHighWaterIds[scope];
+            return !seen.has(String(post.id)) &&
+              Boolean(previousHighWater) &&
+              compareTweetIds(post.id, previousHighWater) > 0;
+          }));
         this.storage.state.seenIds = [...new Set([
           ...targetPosts.map((post) => String(post.id)),
           ...this.storage.state.seenIds,
         ])].slice(0, 500);
-        const fetchedHighWater = observedWatermark || maxTweetId(targetPosts);
-        if (fetchedHighWater && (!previousHighWater || compareTweetIds(fetchedHighWater, previousHighWater) > 0)) {
-          this.storage.state.highWaterId = fetchedHighWater;
+        for (const scope of ['originals', 'replies']) {
+          const fetchedHighWater = observedWatermarks[scope];
+          const previousHighWater = previousHighWaterIds[scope];
+          if (fetchedHighWater && (!previousHighWater || compareTweetIds(fetchedHighWater, previousHighWater) > 0)) {
+            this.storage.state.highWaterIds[scope] = fetchedHighWater;
+          }
         }
+        this.storage.state.highWaterId = this.storage.state.highWaterIds.originals;
         const inserted = [];
-        for (const post of freshCandidates) {
-          if (this.storage.state.posts.some((item) => item.post.id === post.id)) continue;
+        const replayRecords = [];
+        const candidates = replayHours ? sortTweetIdsAscending(targetPosts) : freshCandidates;
+        for (const post of candidates) {
+          const existing = this.storage.state.posts.find((item) => item.post.id === post.id);
+          if (existing) {
+            if (replayHours && !existing.replayReviewedAt && (
+              ['pending', 'error'].includes(existing.analysisStatus) ||
+              existing.analysis?.historicalBaseline
+            )) {
+              existing.post = post;
+              existing.analysisStatus = 'pending';
+              existing.nextAnalysisAttemptAt = null;
+              replayRecords.push(existing);
+            }
+            continue;
+          }
           const record = {
             post,
             classifierVersion: CLASSIFIER_VERSION,
@@ -827,14 +1124,41 @@ class MonitorService extends EventEmitter {
           };
           this.storage.state.posts.push(record);
           inserted.push(record);
+          if (replayHours) replayRecords.push(record);
         }
         this.storage.saveState();
-        const analyzed = await this.retryPending({
-          postRecords: this.pendingV2AnalysisRecords(),
-          retryNotifications: false,
-        });
+        let analyzed;
+        if (replayHours) {
+          analyzed = await this.retryPending({
+            postRecords: replayRecords,
+            retryNotifications: false,
+            forceCreateEvents: true,
+          });
+        } else {
+          const freshAnalyzed = await this.retryPending({
+            postRecords: inserted,
+            retryNotifications: false,
+            forceCreateEvents: true,
+          });
+          const insertedIds = new Set(inserted.map((record) => String(record.post.id)));
+          const historicalAnalyzed = await this.retryPending({
+            postRecords: this.pendingV2AnalysisRecords()
+              .filter((record) => !insertedIds.has(String(record.post.id))),
+            retryNotifications: false,
+          });
+          analyzed = {
+            newEventCount: freshAnalyzed.newEventCount + historicalAnalyzed.newEventCount,
+            sentCount: freshAnalyzed.sentCount + historicalAnalyzed.sentCount,
+            windowsShownCount: freshAnalyzed.windowsShownCount + historicalAnalyzed.windowsShownCount,
+          };
+        }
         run.newEventCount += analyzed.newEventCount;
         run.sentCount += analyzed.sentCount;
+        run.windowsShownCount += analyzed.windowsShownCount;
+        run.replayCount = replayHours ? replayRecords.length : 0;
+        for (const record of replayRecords) {
+          if (record.analysisStatus === 'complete') record.replayReviewedAt = new Date().toISOString();
+        }
         this.storage.state.posts.sort(postRecordDescending);
         const postsById = new Map(this.storage.state.posts.map((item) => [item.post.id, item.post]));
         this.storage.state.events.sort((left, right) => {
@@ -847,7 +1171,10 @@ class MonitorService extends EventEmitter {
         run.freshCount = inserted.length;
         this.status.newCount = inserted.length;
         run.outcome = 'success';
-        if (inserted.length) {
+        if (replayHours) {
+          const truncated = replayRun?.truncated ? '（达到 100 条上限，较早动态未处理）' : '';
+          this.status.lastMessage = `主动复盘过去 ${replayHours} 小时完成：处理 ${run.replayCount} 条动态，生成 ${run.newEventCount} 条新信号${truncated}。`;
+        } else if (inserted.length) {
           this.status.lastMessage = `发现并处理 ${inserted.length} 条新动态，生成 ${run.newEventCount} 条新信号。`;
         } else if (run.newEventCount) {
           this.status.lastMessage = `检查完成，没有新动态；重试分析生成 ${run.newEventCount} 条信号并发送 ${run.sentCount} 封提醒。`;
@@ -858,6 +1185,15 @@ class MonitorService extends EventEmitter {
         }
       }
       run.finishedAt = new Date().toISOString();
+      if (replayRun) {
+        replayRun.outcome = run.outcome;
+        replayRun.reviewedCount = run.replayCount;
+        replayRun.newEventCount = run.newEventCount;
+        replayRun.mailSentCount = run.sentCount;
+        replayRun.windowsShownCount = run.windowsShownCount;
+        replayRun.finishedAt = run.finishedAt;
+      }
+      if (replayMode === 'startup') this.startupReplayPending = false;
       this.status.lastCheckAt = run.finishedAt;
       this.status.lastError = null;
       this.publishRunCounters(run);
@@ -871,6 +1207,11 @@ class MonitorService extends EventEmitter {
         newEventCount: run.newEventCount,
         retriedCount: run.retriedCount,
         sentCount: run.sentCount,
+        windowsShownCount: run.windowsShownCount,
+        replayCount: run.replayCount,
+        replayHours,
+        replayMode,
+        truncated: Boolean(replayRun?.truncated),
         outOfWindowCount: run.outOfWindowCount,
       };
     } catch (error) {
@@ -883,6 +1224,13 @@ class MonitorService extends EventEmitter {
       run.error = safeError(error);
       run.errorCode = error.code || null;
       run.finishedAt = new Date().toISOString();
+      if (replayRun) {
+        replayRun.outcome = run.outcome;
+        replayRun.reviewedCount = run.replayCount;
+        replayRun.error = run.error;
+        replayRun.errorCode = run.errorCode;
+        replayRun.finishedAt = run.finishedAt;
+      }
       this.status.lastCheckAt = run.finishedAt;
       this.status.lastError = skipped ? null : run.error;
       this.status.lastMessage = profileInUse
@@ -912,6 +1260,10 @@ class MonitorService extends EventEmitter {
         newEventCount: run.newEventCount,
         retriedCount: run.retriedCount,
         sentCount: run.sentCount,
+        windowsShownCount: run.windowsShownCount,
+        replayCount: run.replayCount,
+        replayHours,
+        replayMode,
         outOfWindowCount: run.outOfWindowCount,
       };
     } finally {

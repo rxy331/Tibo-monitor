@@ -106,7 +106,8 @@ button { color: inherit; }
 .hero-badge { display: inline-flex; align-items: center; gap: 9px; color: #b9d2df; font-size: 11px; text-transform: uppercase; letter-spacing: .09em; }
 .hero-card h2 { font-size: clamp(25px, 2.7vw, 38px); max-width: 650px; letter-spacing: -.045em; margin: 16px 0 10px; line-height: 1.12; }
 .hero-card p { color: #91adbd; max-width: 620px; line-height: 1.65; margin: 0; font-size: 13px; }
-.hero-actions, .card-actions { display: flex; gap: 10px; margin-top: 24px; }
+.hero-actions, .card-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+.hero-actions .compact-select { width: auto; min-width: 142px; height: 37px; }
 .overview-test-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; max-width: 620px; margin-top: 12px; }
 .overview-test-grid .test-status { min-width: 0; margin-top: 0; background: rgba(2,15,25,.58); }
 .overview-test-grid .test-status p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -182,6 +183,7 @@ button { color: inherit; }
 .form-grid { display: grid; gap: 13px; }
 .form-grid.two { grid-template-columns: repeat(2, minmax(0,1fr)); }
 .form-grid.monitor-grid { grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(88px, .65fr)); }
+.replay-settings-grid { margin-top: 13px; }
 .form-grid.four { grid-template-columns: repeat(4, minmax(0,1fr)); }
 label { display: grid; gap: 7px; color: #87a2b4; font-size: 10px; }
 input[type="text"], input[type="url"], input[type="email"], input[type="password"], input[type="number"], select {

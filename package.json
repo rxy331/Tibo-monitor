@@ -13,6 +13,7 @@
     "bootstrap:config": "electron scripts/bootstrap-config.cjs",
     "smoke:deepseek": "electron scripts/smoke-deepseek.cjs",
     "smoke:mail": "electron scripts/smoke-mail.cjs",
+    "smoke:windows": "electron scripts/smoke-windows-notification.cjs",
     "smoke:ui": "electron scripts/ui-smoke.cjs",
     "smoke:x": "electron scripts/smoke-x.cjs",
     "audit:x70": "electron scripts/audit-x-posts.cjs -- 70 E:\\temp"

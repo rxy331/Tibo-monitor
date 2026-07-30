@@ -29,17 +29,17 @@ test('renderer defensively sorts tweetAt, eventAt, and createdAt newest first', 
   assert.deepEqual(items.map((item) => item.id), ['created', 'tweet', 'event', 'invalid'], 'renderer sort must not mutate snapshot arrays');
 });
 
-test('poll copy distinguishes all four counters and names zero-fresh sends as historical retries', () => {
+test('poll copy includes replay, email, and Windows notification counters', () => {
   const retry = { freshCount: 0, newEventCount: 0, retriedCount: 3, sentCount: 2 };
-  assert.deepEqual(pollCounts(retry), retry);
-  assert.equal(formatPollResult(retry), '无新帖，补发 2 封历史提醒；新信号 0 条，历史重试 3 封。');
+  assert.deepEqual(pollCounts(retry), { ...retry, windowsShownCount: 0, replayCount: 0 });
+  assert.equal(formatPollResult(retry), '无新帖，补发 2 封邮件、显示 0 条系统通知；新信号 0 条。');
   assert.doesNotMatch(formatPollResult(retry), /新提醒/);
 
   const fresh = formatPollResult({ freshCount: 4, newEventCount: 1, retriedCount: 2, sentCount: 3 });
   assert.match(fresh, /新帖 4 条/);
   assert.match(fresh, /新信号 1 条/);
-  assert.match(fresh, /历史重试 2 封/);
-  assert.match(fresh, /已发送 3 封/);
+  assert.match(fresh, /邮件 3 封/);
+  assert.match(fresh, /系统通知 0 条/);
 });
 
 test('failed and profile-busy polls render all four counters from snapshot runtime', () => {
@@ -49,7 +49,7 @@ test('failed and profile-busy polls render all four counters from snapshot runti
   };
   assert.deepEqual(
     pollCounts(pollDisplaySource(fetchFailureSnapshot, staleFailureResponse)),
-    { freshCount: 0, newEventCount: 0, retriedCount: 3, sentCount: 2 },
+    { freshCount: 0, newEventCount: 0, retriedCount: 3, sentCount: 2, windowsShownCount: 0, replayCount: 0 },
   );
 
   const profileBusySnapshot = {
@@ -57,7 +57,7 @@ test('failed and profile-busy polls render all four counters from snapshot runti
   };
   assert.deepEqual(
     pollCounts(pollDisplaySource(profileBusySnapshot, { ok: false, code: 'X_FIREFOX_PROFILE_IN_USE' })),
-    { freshCount: 0, newEventCount: 0, retriedCount: 4, sentCount: 1 },
+    { freshCount: 0, newEventCount: 0, retriedCount: 4, sentCount: 1, windowsShownCount: 0, replayCount: 0 },
   );
 });
 
@@ -68,15 +68,17 @@ test('poll interval is clamped to the supported 5 to 30 minute UI range', () => 
   assert.equal(clampPollInterval('not-a-number'), 15);
 });
 
-test('reply and pure-retweet controls and payload fields are absent while policy remains visible', () => {
+test('reply analysis and both replay controls are visible while pure retweets remain fixed off', () => {
   const html = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8');
   const appSource = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8');
-  assert.doesNotMatch(html, /id=["']include-replies["']/);
+  assert.match(html, /id=["']include-replies["']/);
   assert.doesNotMatch(html, /id=["']include-retweets["']/);
-  assert.doesNotMatch(appSource, /includeReplies/);
+  assert.match(appSource, /includeReplies/);
   assert.doesNotMatch(appSource, /includeRetweets/);
-  assert.match(html, /回复与纯转推始终排除，只分析 Tibo 本人原创帖/);
-  assert.match(html, /每轮只分析最近30分钟原创帖/);
+  assert.match(html, /启动时自动复盘/);
+  assert.match(html, /id="replay-now"/);
+  assert.match(html, /纯转推始终排除/);
+  assert.match(html, /常规轮询只分析最近 30 分钟/);
   assert.match(html, /id="poll-interval"[^>]*min="5"[^>]*max="30"/);
   assert.match(appSource, /AI 已分析 · 无信号/);
 });

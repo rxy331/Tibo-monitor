@@ -71,13 +71,23 @@ function eventNotificationLabel(event = {}) {
     return '旧版邮件已停止重试';
   }
   if (event.needsHumanReview) return '人工复核 · 不通知';
-  return ({
+  const mail = ({
     sent: '邮件已发送',
     failed: '邮件发送失败',
     waiting_for_mail_config: '等待邮件配置',
     pending: '等待发送',
     not_required: '无需通知',
   }[event.notificationStatus] || '状态未知');
+  if (!event.windowsNotificationStatus) return mail;
+  const windows = ({
+    shown: 'Windows 已显示',
+    failed: 'Windows 显示失败',
+    pending: 'Windows 等待显示',
+    not_selected: 'Windows 未启用',
+    not_required: 'Windows 无需通知',
+    superseded: '旧版 Windows 通知已停止',
+  }[event.windowsNotificationStatus] || 'Windows 状态未知');
+  return `${mail} · ${windows}`;
 }
 
 function alertHistoryView(rawEvents = [], legacyAudit = {}) {
@@ -104,6 +114,8 @@ function pollCounts(result = {}) {
     newEventCount: numeric(result.newEventCount),
     retriedCount: numeric(result.retriedCount),
     sentCount: numeric(result.sentCount),
+    windowsShownCount: numeric(result.windowsShownCount),
+    replayCount: numeric(result.replayCount),
   };
 }
 
@@ -122,13 +134,14 @@ function clampPollInterval(value, fallback = 15) {
 function formatPollResult(result = {}) {
   const counts = pollCounts(result);
   if (counts.freshCount === 0 && counts.sentCount > 0) {
-    return `无新帖，补发 ${counts.sentCount} 封历史提醒；新信号 ${counts.newEventCount} 条，历史重试 ${counts.retriedCount} 封。`;
+    return `无新帖，补发 ${counts.sentCount} 封邮件、显示 ${counts.windowsShownCount} 条系统通知；新信号 ${counts.newEventCount} 条。`;
   }
   if (counts.freshCount === 0 && counts.retriedCount > 0) {
     return `无新帖；历史提醒重试 ${counts.retriedCount} 封，发送成功 ${counts.sentCount} 封，新信号 ${counts.newEventCount} 条。`;
   }
   const prefix = String(result.message || '').includes('基线已建立') ? '基线已建立' : counts.freshCount === 0 ? '无新帖' : '轮询完成';
-  return `${prefix} · 新帖 ${counts.freshCount} 条 · 新信号 ${counts.newEventCount} 条 · 历史重试 ${counts.retriedCount} 封 · 已发送 ${counts.sentCount} 封`;
+  const replay = counts.replayCount ? ` · 复盘 ${counts.replayCount} 条` : '';
+  return `${prefix}${replay} · 新帖 ${counts.freshCount} 条 · 新信号 ${counts.newEventCount} 条 · 邮件 ${counts.sentCount} 封 · 系统通知 ${counts.windowsShownCount} 条`;
 }
 
 function escapeText(value) {
@@ -244,7 +257,7 @@ function setProfileHint(message, state = 'idle') {
 
 function syncXActionButtons() {
   const locked = xUiBusy || browserProfileLoading;
-  ['check-now', 'activity-refresh', 'quick-test-x', 'open-x-login', 'test-x', 'choose-firefox-executable', 'clear-firefox-executable', 'refresh-firefox-profiles'].forEach((id) => {
+  ['check-now', 'replay-now', 'activity-refresh', 'quick-test-x', 'open-x-login', 'test-x', 'choose-firefox-executable', 'clear-firefox-executable', 'refresh-firefox-profiles'].forEach((id) => {
     const button = $(`#${id}`);
     if (button) button.disabled = locked;
   });
@@ -315,6 +328,19 @@ function renderMailConnection() {
   }
 }
 
+function renderWindowsNotificationConnection() {
+  if ($('#windows-test-status')?.dataset.state === 'loading') return;
+  const connection = snapshot?.state?.windowsNotificationConnection || {};
+  const checked = connection.checkedAt ? ` · ${formatTime(connection.checkedAt)}` : '';
+  if (connection.status === 'connected') {
+    setTestStatus('windows', 'success', 'Windows 通知正常', `${connection.message || '测试通知已显示。'}${checked}`);
+  } else if (connection.status === 'error') {
+    setTestStatus('windows', 'error', 'Windows 通知测试失败', `${connection.message || '请检查系统通知设置。'}${checked}`);
+  } else {
+    setTestStatus('windows', 'idle', 'Windows 通知尚未测试', connection.message || '测试时会显示一条系统通知。');
+  }
+}
+
 function setPage(name) {
   $$('.page').forEach((page) => page.classList.toggle('active', page.id === `page-${name}`));
   $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.page === name));
@@ -351,6 +377,7 @@ function renderPollSummary(result = {}, hasResult = true) {
   $('#poll-event-count').textContent = String(counts.newEventCount);
   $('#poll-retried-count').textContent = String(counts.retriedCount);
   $('#poll-sent-count').textContent = String(counts.sentCount);
+  $('#poll-windows-count').textContent = String(counts.windowsShownCount);
   $('#poll-result-message').textContent = hasResult ? formatPollResult(result) : '尚未产生轮询结果';
 }
 
@@ -368,7 +395,7 @@ function renderOverview() {
   $('#monitor-toggle-label').textContent = enabled ? '暂停监控' : '开始监控';
   $('#top-last-check').textContent = formatTime(runtime.lastCheckAt);
   $('#hero-title').textContent = runtime.lastError ? '数据源需要你的关注' : enabled ? '正在守候 Tibo 的下一次重置信号' : '准备好监听 Tibo 的下一次信号';
-  $('#hero-message').textContent = runtime.lastError || runtime.lastMessage || '首次检查只建立基线，不会为历史动态发送邮件。';
+  $('#hero-message').textContent = runtime.lastError || runtime.lastMessage || '首次检查默认只建立基线；也可按指定时段主动复盘。';
   $('#metric-handle').textContent = `@${settings.x.handle}`;
   $('#metric-interval').textContent = `约每 ${clampPollInterval(settings.x.pollIntervalMinutes)} 分钟`;
   $('#metric-posts').textContent = String(orderedPosts.length);
@@ -404,7 +431,7 @@ function renderActivity() {
   const legacyHiddenCount = Array.isArray(snapshot.state.legacyAudit?.ignoredPostIds) ? snapshot.state.legacyAudit.ignoredPostIds.length : 0;
   const hiddenCount = Math.max(allPosts.length - posts.length, legacyHiddenCount);
   $('#activity-audit-summary').hidden = hiddenCount === 0;
-  $('#activity-audit-summary').textContent = hiddenCount ? `已隐藏 ${hiddenCount} 条回复、非目标帖子或旧版无效记录。` : '';
+  $('#activity-audit-summary').textContent = hiddenCount ? `已隐藏 ${hiddenCount} 条非目标帖子、纯转推或旧版无效记录。` : '';
   $('#activity-list').classList.toggle('empty-state', posts.length === 0);
   $('#activity-list').innerHTML = posts.length ? posts.map((item) => {
     const finding = item.analysis?.result?.events?.find((event) => event.type !== 'none');
@@ -415,7 +442,7 @@ function renderActivity() {
         : [item.analysisStatus === 'error' ? '分析失败' : '等待分析', ''];
     const label = item.analysis?.result?.needs_human_review ? `${baseLabel} · 人工复核` : baseLabel;
     return `<article class="feed-item">
-      <div class="feed-top"><div class="feed-meta"><span class="tag">@${escapeText(snapshot.settings.x.handle)}</span><span>${formatTime(item.post.tweetAt || item.post.timestamp || item.tweetAt || item.createdAt, '时间未知')}</span></div><span class="tag ${cls}">${label}${finding ? ` · ${Math.round(finding.confidence * 100)}%` : ''}</span></div>
+      <div class="feed-top"><div class="feed-meta"><span class="tag">@${escapeText(snapshot.settings.x.handle)}</span>${item.post.isReply ? '<span class="tag">回复帖</span>' : ''}<span>${formatTime(item.post.tweetAt || item.post.timestamp || item.tweetAt || item.createdAt, '时间未知')}</span></div><span class="tag ${cls}">${label}${finding ? ` · ${Math.round(finding.confidence * 100)}%` : ''}</span></div>
       <p class="feed-text">${escapeText(item.post.text)}</p>
       <div class="feed-meta"><button class="text-button external" data-url="${escapeText(item.post.url)}">打开原帖 →</button>${item.analysisError ? `<span>${escapeText(item.analysisError)}</span>` : ''}</div>
     </article>`;
@@ -495,6 +522,10 @@ function fillForm() {
   $('#firefox-executable').value = settings.x.firefoxExecutablePath || '';
   $('#poll-interval').value = clampPollInterval(settings.x.pollIntervalMinutes);
   $('#fetch-limit').value = settings.x.fetchLimit;
+  $('#include-replies').checked = Boolean(settings.x.includeReplies);
+  $('#startup-replay-hours').value = String(settings.x.startupReplayHours || 0);
+  $('#settings-manual-replay-hours').value = String(settings.x.manualReplayHours || 6);
+  $('#manual-replay-hours').value = String(settings.x.manualReplayHours || 6);
   $('#accept-risk').checked = settings.app.acceptedXActionsRisk;
   $('#ai-url').value = settings.ai.baseUrl;
   $('#ai-model').value = settings.ai.model;
@@ -508,6 +539,7 @@ function fillForm() {
   renderRecipientList();
   $('#smtp-secure').checked = settings.mail.secure;
   $('#mail-enabled').checked = settings.mail.enabled;
+  $('#windows-notification-enabled').checked = Boolean(settings.windowsNotification?.enabled);
   $('#close-to-tray').checked = settings.app.closeToTray;
   $('#start-minimized').checked = settings.app.startMinimized;
   $('#data-path').textContent = dataPath;
@@ -527,6 +559,7 @@ function render(nextSnapshot, { fillSettings = true } = {}) {
   renderXConnection();
   renderAiConnection();
   renderMailConnection();
+  renderWindowsNotificationConnection();
 }
 
 function readSettingsForm() {
@@ -537,6 +570,9 @@ function readSettingsForm() {
     firefoxProfilePath: snapshot.settings.x.firefoxProfilePath || '',
     pollIntervalMinutes: clampPollInterval($('#poll-interval').value),
     fetchLimit: Number($('#fetch-limit').value),
+    includeReplies: $('#include-replies').checked,
+    startupReplayHours: Number($('#startup-replay-hours').value),
+    manualReplayHours: Number($('#settings-manual-replay-hours').value),
   };
   next.ai.baseUrl = $('#ai-url').value;
   next.ai.model = $('#ai-model').value;
@@ -550,6 +586,7 @@ function readSettingsForm() {
   next.mail.recipients = [...smtpRecipients];
   next.mail.secure = $('#smtp-secure').checked;
   next.mail.enabled = $('#mail-enabled').checked;
+  next.windowsNotification.enabled = $('#windows-notification-enabled').checked;
   next.app.closeToTray = $('#close-to-tray').checked;
   next.app.startMinimized = $('#start-minimized').checked;
   next.app.acceptedXActionsRisk = $('#accept-risk').checked;
@@ -724,6 +761,24 @@ function bindEvents() {
   });
 
   $('#check-now').addEventListener('click', (event) => runCheck(event.currentTarget));
+  $('#replay-now').addEventListener('click', (event) => withBusy(event.currentTarget, async () => {
+    const hours = Number($('#manual-replay-hours').value);
+    const result = await window.tibo.replayNow(hours);
+    let latestSnapshot = null;
+    try { latestSnapshot = await window.tibo.getState(); } catch { /* Keep the operation result. */ }
+    if (latestSnapshot?.runtime) render(latestSnapshot, { fillSettings: false });
+    return result;
+  }, '主动复盘完成', {
+    xOperation: true,
+    statusKind: 'x',
+    busyText: '正在复盘 X…',
+    pendingTitle: '正在主动复盘',
+    pendingMessage: '将读取所选时段内的 Tibo 动态并进行去重分析。',
+    failureTitle: (result) => xFailurePresentation(result).title,
+    failureState: (result) => xFailurePresentation(result).state,
+    successStatusTitle: '主动复盘完成',
+    formatSuccess: (result) => result.message || formatPollResult(result),
+  }));
   $('#activity-refresh').addEventListener('click', (event) => runCheck(event.currentTarget));
   $('#quick-test-x').addEventListener('click', (event) => runXTest(event.currentTarget));
   $('#quick-test-ai').addEventListener('click', (event) => runAiTest(event.currentTarget));
@@ -754,6 +809,16 @@ function bindEvents() {
     pendingMessage: '正在登录邮箱服务器并发送测试邮件，通常需要数秒。',
     failureTitle: 'QQ 邮件测试失败',
     formatSuccess: formatMailTest,
+  }));
+  $('#test-windows-notification').addEventListener('click', (event) => withBusy(event.currentTarget, async () => {
+    if (!await saveFromForm({ silent: true })) return { ok: false, message: '请先保存有效配置。' };
+    return window.tibo.testWindowsNotification();
+  }, '测试通知已显示', {
+    statusKind: 'windows',
+    busyText: '正在显示通知…',
+    pendingTitle: '正在测试 Windows 通知',
+    pendingMessage: '正在注册本机快捷方式并请求系统显示通知。',
+    failureTitle: 'Windows 通知测试失败',
   }));
   $('#refresh-firefox-profiles').addEventListener('click', () => loadBrowserProfiles({ announce: true }));
   $('#accept-risk').addEventListener('change', () => {

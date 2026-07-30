@@ -57,7 +57,7 @@ function normalizeTargetHandle(username) {
   return String(username || '').trim().replace(/^@+/, '').toLowerCase();
 }
 
-function isTargetProfilePostsUrl(currentUrl, username) {
+function isTargetProfilePostsUrl(currentUrl, username, includeReplies = false) {
   const targetHandle = normalizeTargetHandle(username);
   if (!targetHandle) return false;
   try {
@@ -66,7 +66,8 @@ function isTargetProfilePostsUrl(currentUrl, username) {
       return false;
     }
     const pathname = decodeURIComponent(parsed.pathname).replace(/\/+$/, '');
-    return pathname.toLowerCase() === `/${targetHandle}`;
+    const expected = includeReplies ? `/${targetHandle}/with_replies` : `/${targetHandle}`;
+    return pathname.toLowerCase() === expected;
   } catch {
     return false;
   }
@@ -80,6 +81,17 @@ function isAcceptedOriginalTweet(tweet, username) {
     normalizeTargetHandle(tweet?.author) === targetHandle &&
     tweet?.isReply === false &&
     tweet?.isRetweet === false,
+  );
+}
+
+function isAcceptedTargetTweet(tweet, username, { includeReplies = false } = {}) {
+  const targetHandle = normalizeTargetHandle(username);
+  return Boolean(
+    targetHandle &&
+    /^\d+$/.test(String(tweet?.id || '')) &&
+    normalizeTargetHandle(tweet?.author) === targetHandle &&
+    tweet?.isRetweet === false &&
+    (tweet?.isReply === false || (includeReplies && tweet?.isReply === true)),
   );
 }
 
@@ -165,13 +177,13 @@ function observeOriginalTweetTexts(page) {
   };
 }
 
-async function evaluateTimeline(page, username) {
+async function evaluateTimeline(page, username, { includeReplies = false } = {}) {
   let lastError = null;
   const targetHandle = normalizeTargetHandle(username);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const currentUrl = page.url?.() || '';
-      const profilePostsVerified = isTargetProfilePostsUrl(currentUrl, targetHandle);
+      const profilePostsVerified = isTargetProfilePostsUrl(currentUrl, targetHandle, includeReplies);
       return await page.evaluate(({ expectedHandle, verifiedPostsPage }) => {
         const bodyText = document.body?.innerText?.slice(0, 4000) || '';
         const authRequired = Boolean(
@@ -237,6 +249,11 @@ async function evaluateTimeline(page, username) {
                 .test(label)
             ))
           ));
+          const replyTo = hasReplyLabel
+            ? [...new Set(replyContexts
+              .flatMap((node) => explicitContextLabels(node))
+              .flatMap((label) => [...label.matchAll(/@([a-zA-Z0-9_]{1,15})/g)].map((match) => match[1].toLowerCase())))]
+            : [];
           const hasRepostLabel = socialContexts.some((node) => (
             /\breposted\b|\bretweeted\b|\brepost(?:ed)?\b|转发了|轉發了|已转发|已轉發|リポストしました|republicado/i
               .test(explicitContextLabels(node).join(' '))
@@ -257,6 +274,7 @@ async function evaluateTimeline(page, username) {
             views: article.querySelector('a[href*="/analytics"] span span')?.textContent || '0',
             isQuote: Boolean(article.querySelector('[data-testid="quoteTweet"]')),
             isReply: hasReplyLabel ? true : (verifiedPostsPage ? false : null),
+            replyTo,
             isRetweet: hasRepostLabel,
           };
         }).filter(Boolean);
@@ -292,9 +310,10 @@ async function safeScroll(page) {
 async function scrapeRecentTweets(page, username, options = {}) {
   const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
   const targetHandle = normalizeTargetHandle(username);
+  const includeReplies = Boolean(options.includeReplies);
   const originalCapture = observeOriginalTweetTexts(page);
   try {
-    const url = `https://x.com/${encodeURIComponent(targetHandle)}`;
+    const url = `https://x.com/${encodeURIComponent(targetHandle)}${includeReplies ? '/with_replies' : ''}`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForSelector('body', { timeout: 15000 });
   try {
@@ -316,7 +335,7 @@ async function scrapeRecentTweets(page, username, options = {}) {
   const maxPasses = Math.max(4, Math.min(60, Number(options.maxPasses || defaultMaxPasses)));
 
   for (let pass = 0; pass < maxPasses && tweets.size < limit; pass += 1) {
-    const state = await evaluateTimeline(page, targetHandle);
+    const state = await evaluateTimeline(page, targetHandle, { includeReplies });
     const currentUrl = page.url();
     if (state.authRequired || /\/i\/flow\/login/i.test(currentUrl)) {
       throw createXError(
@@ -331,7 +350,7 @@ async function scrapeRecentTweets(page, username, options = {}) {
       throw createXError('X_PAGE_NOT_READY', 'X 页面尚未加载完成。请确认所选浏览器中已显示 X 首页后重试。');
     }
 
-    state.tweets.filter((tweet) => isAcceptedOriginalTweet(tweet, targetHandle)).forEach((tweet) => {
+    state.tweets.filter((tweet) => isAcceptedTargetTweet(tweet, targetHandle, { includeReplies })).forEach((tweet) => {
       if (!tweets.has(tweet.id)) tweets.set(tweet.id, tweet);
     });
     if (tweets.size >= limit || pass + 1 >= maxPasses) break;
@@ -374,6 +393,7 @@ module.exports = {
   evaluateTimeline,
   friendlyXError,
   isAcceptedOriginalTweet,
+  isAcceptedTargetTweet,
   isTransientPageError,
   isTargetProfilePostsUrl,
   normalizeTargetHandle,

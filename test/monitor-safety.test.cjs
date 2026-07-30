@@ -78,14 +78,20 @@ test('monitoring window is inclusive at minus 30 minutes and plus 2 minutes', ()
 test('fetch result accepts the observed high-water contract while preserving legacy arrays', () => {
   const legacy = [samplePost('1')];
   legacy.observedHighWaterId = '9';
-  assert.deepEqual(normalizeFetchResult(legacy), { posts: legacy, observedHighWaterId: '9' });
+  assert.deepEqual(normalizeFetchResult(legacy), {
+    posts: legacy,
+    observedHighWaterId: '9',
+    observedHighWaterIds: { originals: '9', replies: null },
+  });
   assert.deepEqual(normalizeFetchResult({ posts: [], observedHighWaterId: '500' }), {
     posts: [],
     observedHighWaterId: '500',
+    observedHighWaterIds: { originals: '500', replies: null },
   });
   assert.deepEqual(normalizeFetchResult({ posts: 'invalid', observedHighWaterId: 'not-an-id' }), {
     posts: [],
     observedHighWaterId: null,
+    observedHighWaterIds: { originals: null, replies: null },
   });
 });
 
@@ -182,7 +188,9 @@ test('portable shortcuts target the persistent launcher and replace an existing 
   assert.match(mainSource, /cwd: app\.isPackaged \? path\.dirname\(target\) : app\.getAppPath\(\)/);
   assert.match(mainSource, /icon: app\.isPackaged \? target : assetPath\('app-icon\.ico'\)/);
   assert.match(mainSource, /const operation = fs\.existsSync\(shortcutPath\) \? 'replace' : 'create'/);
-  assert.match(mainSource, /shell\.writeShortcutLink\(shortcutPath, operation, options\)/);
+  assert.match(mainSource, /shell\.writeShortcutLink\(shortcutPath, operation, shortcutDetails\(\)\)/);
+  assert.match(mainSource, /appUserModelId: APP_USER_MODEL_ID/);
+  assert.match(mainSource, /toastActivatorClsid: TOAST_ACTIVATOR_CLSID/);
 });
 
 test('settings saves are serialized and rebase full snapshots captured concurrently', () => {
@@ -212,22 +220,22 @@ test('settings saves are serialized and rebase full snapshots captured concurren
   assert.match(mainSource, /rebaseSettingsSnapshot\(storage\.settings, baseSettings, requestedSettings\)/);
 });
 
-test('settings migration permanently drops legacy reply and retweet toggles', () => {
+test('settings migration preserves the supported reply toggle and drops only retweets', () => {
   const legacy = clone(DEFAULT_SETTINGS);
   legacy.schemaVersion = 1;
   legacy.x.includeReplies = true;
   legacy.x.includeRetweets = true;
   legacy.ai.promptVersion = 'reset-classifier-v1';
   const migrated = sanitizeSettings(legacy, DEFAULT_SETTINGS);
-  assert.equal(migrated.schemaVersion, 4);
-  assert.equal(Object.hasOwn(migrated.x, 'includeReplies'), false);
+  assert.equal(migrated.schemaVersion, 5);
+  assert.equal(migrated.x.includeReplies, true);
   assert.equal(Object.hasOwn(migrated.x, 'includeRetweets'), false);
   assert.equal(migrated.ai.promptVersion, 'reset-classifier-v2');
 
   const current = clone(DEFAULT_SETTINGS);
   current.x.includeReplies = true;
   current.x.includeRetweets = true;
-  assert.equal(Object.hasOwn(sanitizeSettings(current, DEFAULT_SETTINGS).x, 'includeReplies'), false);
+  assert.equal(sanitizeSettings(current, DEFAULT_SETTINGS).x.includeReplies, true);
   assert.equal(Object.hasOwn(sanitizeSettings(current, DEFAULT_SETTINGS).x, 'includeRetweets'), false);
 });
 

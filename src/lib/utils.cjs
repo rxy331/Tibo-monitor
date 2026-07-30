@@ -103,10 +103,14 @@ function sanitizeSettings(candidate, defaults) {
     : merged.x.pollIntervalMinutes;
   merged.x.pollIntervalMinutes = clamp(requestedPollInterval, 5, 30);
   merged.x.fetchLimit = Math.round(clamp(merged.x.fetchLimit, 5, 100));
-  // Reply timelines include conversation parents and are no longer part of
-  // the supported monitoring contract. Always drop the legacy v1 key instead
-  // of carrying it into a freshly saved settings document.
-  delete merged.x.includeReplies;
+  merged.x.includeReplies = Boolean(merged.x.includeReplies);
+  const replayHours = new Set([0, 1, 3, 6, 12, 24, 72]);
+  const startupReplayHours = Math.round(Number(merged.x.startupReplayHours));
+  const manualReplayHours = Math.round(Number(merged.x.manualReplayHours));
+  merged.x.startupReplayHours = replayHours.has(startupReplayHours) ? startupReplayHours : 0;
+  merged.x.manualReplayHours = replayHours.has(manualReplayHours) && manualReplayHours > 0
+    ? manualReplayHours
+    : defaults.x.manualReplayHours;
   // Reposts are likewise fixed off. Keeping a persisted toggle would widen
   // the timeline without a compatible author/activity watermark.
   delete merged.x.includeRetweets;
@@ -128,6 +132,7 @@ function sanitizeSettings(candidate, defaults) {
   merged.mail.username = String(merged.mail.username || '').trim();
   merged.mail.from = String(merged.mail.from || '').trim();
   merged.mail.recipients = parseRecipients(merged.mail.recipients).slice(0, 50);
+  merged.windowsNotification.enabled = Boolean(merged.windowsNotification.enabled);
 
   merged.app.monitoringEnabled = Boolean(merged.app.monitoringEnabled);
   merged.app.closeToTray = Boolean(merged.app.closeToTray);

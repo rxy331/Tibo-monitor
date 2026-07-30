@@ -478,7 +478,15 @@ app.whenReady().then(async () => {
       && saved.settings.mail.recipients.length === 1
       && saved.settings.mail.recipients[0] === 'second@example.com';
     const pollIntervalClampedOnSave = saved.settings.x.pollIntervalMinutes === 30;
-    const filtersRemoved = !document.querySelector('#include-replies') && !document.querySelector('#include-retweets');
+    const replyAndReplayControls = Boolean(
+      document.querySelector('#include-replies') &&
+      document.querySelector('#startup-replay-hours') &&
+      document.querySelector('#manual-replay-hours') &&
+      document.querySelector('#replay-now') &&
+      document.querySelector('#windows-notification-enabled') &&
+      document.querySelector('#test-windows-notification') &&
+      !document.querySelector('#include-retweets'),
+    );
     const riskPromptVisible = document.querySelector('#risk-required-hint').hidden
       && document.querySelector('.risk-box.prominent').textContent.includes('必须先勾选');
     const saveBar = document.querySelector('.save-bar');
@@ -486,9 +494,9 @@ app.whenReady().then(async () => {
     const xCardRect = document.querySelector('#x-settings-card').getBoundingClientRect();
     const aiCardRect = document.querySelector('#ai-url').closest('.settings-card').getBoundingClientRect();
     const settingsColumnsAligned = Math.abs(xCardRect.top - aiCardRect.top) < 2 && aiCardRect.left > xCardRect.right;
-    return { firefoxOnly, profilesLoaded, aiRestored, mailRestored, riskGuard, profileRefreshLocksAll, initialRecipients: initialRecipients.includes('first@example.com'), recipientsAdded, autoSavedAfterAdd, recipientRemoved, autoSavedAfterDelete, loading, success, savedDirect, savedRecipients, pollIntervalClampedOnSave, filtersRemoved, riskPromptVisible, saveBarDoesNotOverlay, settingsColumnsAligned };
+    return { firefoxOnly, profilesLoaded, aiRestored, mailRestored, riskGuard, profileRefreshLocksAll, initialRecipients: initialRecipients.includes('first@example.com'), recipientsAdded, autoSavedAfterAdd, recipientRemoved, autoSavedAfterDelete, loading, success, savedDirect, savedRecipients, pollIntervalClampedOnSave, replyAndReplayControls, riskPromptVisible, saveBarDoesNotOverlay, settingsColumnsAligned };
   })()`);
-  const required = ['firefoxOnly', 'profilesLoaded', 'aiRestored', 'mailRestored', 'riskGuard', 'profileRefreshLocksAll', 'initialRecipients', 'recipientsAdded', 'autoSavedAfterAdd', 'recipientRemoved', 'autoSavedAfterDelete', 'loading', 'success', 'savedDirect', 'savedRecipients', 'pollIntervalClampedOnSave', 'filtersRemoved', 'riskPromptVisible', 'saveBarDoesNotOverlay', 'settingsColumnsAligned'];
+  const required = ['firefoxOnly', 'profilesLoaded', 'aiRestored', 'mailRestored', 'riskGuard', 'profileRefreshLocksAll', 'initialRecipients', 'recipientsAdded', 'autoSavedAfterAdd', 'recipientRemoved', 'autoSavedAfterDelete', 'loading', 'success', 'savedDirect', 'savedRecipients', 'pollIntervalClampedOnSave', 'replyAndReplayControls', 'riskPromptVisible', 'saveBarDoesNotOverlay', 'settingsColumnsAligned'];
   if (required.some((key) => !interaction[key])) {
     throw new Error('UI interaction smoke failed: ' + JSON.stringify(interaction));
   }

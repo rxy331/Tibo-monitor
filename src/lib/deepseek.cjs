@@ -171,6 +171,8 @@ class DeepSeekClient {
       id: item.id,
       timestamp: item.timestamp,
       text: item.text,
+      is_reply: Boolean(item.isReply),
+      reply_to: Array.isArray(item.replyTo) ? item.replyTo : [],
     }));
     const userPayload = {
       author: `@${this.getSettings().x.handle}`,
@@ -180,6 +182,8 @@ class DeepSeekClient {
         text: post.text,
         url: post.url,
         is_quote: Boolean(post.isQuote),
+        is_reply: Boolean(post.isReply),
+        reply_to: Array.isArray(post.replyTo) ? post.replyTo : [],
         is_retweet: Boolean(post.isRetweet),
       },
       recent_context: contextText,

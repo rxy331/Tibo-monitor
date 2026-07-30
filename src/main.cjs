@@ -10,6 +10,7 @@ const {
   ipcMain,
   Menu,
   nativeImage,
+  Notification,
   powerMonitor,
   safeStorage,
   shell,
@@ -22,10 +23,20 @@ const { listFirefoxProfiles } = require('./lib/firefox-profiles.cjs');
 const { DeepSeekClient } = require('./lib/deepseek.cjs');
 const { Mailer } = require('./lib/mailer.cjs');
 const { MonitorService, rebaseSettingsSnapshot } = require('./lib/monitor.cjs');
+const {
+  APP_USER_MODEL_ID,
+  TOAST_ACTIVATOR_CLSID,
+  WindowsNotifier,
+} = require('./lib/windows-notifier.cjs');
 const { backupLegacyJsonFile, parseRecipients, safeError, sanitizeSettings } = require('./lib/utils.cjs');
 const { configureElectronDataPaths } = require('./lib/electron-paths.cjs');
 
 configureElectronDataPaths(app);
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_USER_MODEL_ID);
+  app.setToastActivatorCLSID?.(TOAST_ACTIVATOR_CLSID);
+}
 
 const diagnosticSmoke = process.argv.includes('--diagnostic-smoke');
 const diagnosticPath = path.join(app.getPath('documents'), 'Tibo Monitor', 'startup-diagnostic.json');
@@ -48,6 +59,7 @@ let tray = null;
 let storage = null;
 let source = null;
 let monitor = null;
+let windowsNotifier = null;
 let isQuitting = false;
 let quitCleanupInProgress = false;
 let quitCleanupComplete = false;
@@ -189,25 +201,51 @@ function createTray() {
   tray.on('double-click', showWindow);
 }
 
-function createShortcut() {
-  const shortcutPath = path.join(app.getPath('desktop'), 'Tibo Monitor.lnk');
+function shortcutTarget() {
   const portableExecutable = String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim();
   const portableTarget = portableExecutable ? path.resolve(portableExecutable) : null;
-  const target = app.isPackaged && portableTarget && fs.existsSync(portableTarget)
+  return app.isPackaged && portableTarget && fs.existsSync(portableTarget)
     ? portableTarget
     : process.execPath;
-  const options = {
+}
+
+function shortcutDetails() {
+  const target = shortcutTarget();
+  return {
     target,
     cwd: app.isPackaged ? path.dirname(target) : app.getAppPath(),
     description: '监控 Tibo 的 X 动态与 GPT 额度重置消息',
     icon: app.isPackaged ? target : assetPath('app-icon.ico'),
     iconIndex: 0,
+    appUserModelId: APP_USER_MODEL_ID,
+    toastActivatorClsid: TOAST_ACTIVATOR_CLSID,
     ...(app.isPackaged ? {} : { args: `"${app.getAppPath()}"` }),
   };
+}
+
+function writeShortcut(shortcutPath) {
+  fs.mkdirSync(path.dirname(shortcutPath), { recursive: true });
   const operation = fs.existsSync(shortcutPath) ? 'replace' : 'create';
-  const ok = shell.writeShortcutLink(shortcutPath, operation, options);
-  if (!ok) throw new Error('Windows 未能创建桌面快捷方式。');
+  const ok = shell.writeShortcutLink(shortcutPath, operation, shortcutDetails());
+  if (!ok) throw new Error('Windows 未能创建快捷方式。');
   return { ok: true, path: shortcutPath };
+}
+
+function createShortcut() {
+  const shortcutPath = path.join(app.getPath('desktop'), 'Tibo Monitor.lnk');
+  return writeShortcut(shortcutPath);
+}
+
+function ensureWindowsNotificationShortcut() {
+  const shortcutPath = path.join(
+    app.getPath('appData'),
+    'Microsoft',
+    'Windows',
+    'Start Menu',
+    'Programs',
+    'Tibo Monitor.lnk',
+  );
+  return writeShortcut(shortcutPath);
 }
 
 function registerIpc(ai, mailer) {
@@ -270,6 +308,17 @@ function registerIpc(ai, mailer) {
     monitor.emitUpdate();
   };
 
+  const saveWindowsNotificationConnection = (patch) => {
+    storage.state.windowsNotificationConnection = {
+      ...storage.state.windowsNotificationConnection,
+      checkedAt: new Date().toISOString(),
+      supported: windowsNotifier?.isSupported?.() ?? false,
+      ...patch,
+    };
+    storage.saveState();
+    monitor.emitUpdate();
+  };
+
   trustedHandle('app:get-state', () => monitor.snapshot());
 
   trustedHandle('settings:save', (_event, payload = {}) => {
@@ -288,6 +337,7 @@ function registerIpc(ai, mailer) {
         const previousAiBaseUrl = storage.settings.ai.baseUrl;
         const previousAiModel = storage.settings.ai.model;
         const previousMail = structuredClone(storage.settings.mail);
+        const previousWindowsNotification = structuredClone(storage.settings.windowsNotification);
         const handleChanged = previousHandle !== nextSettings.x.handle;
         const xSourceChanged = handleChanged ||
           previousFirefoxExecutablePath !== nextSettings.x.firefoxExecutablePath ||
@@ -331,6 +381,17 @@ function registerIpc(ai, mailer) {
             host: storage.settings.mail.host,
             port: storage.settings.mail.port,
             accepted: 0,
+          };
+          storage.saveState();
+        }
+        if (previousWindowsNotification.enabled !== storage.settings.windowsNotification.enabled) {
+          storage.state.windowsNotificationConnection = {
+            status: 'unverified',
+            checkedAt: null,
+            message: storage.settings.windowsNotification.enabled
+              ? 'Windows 通知已启用，请发送测试通知确认系统设置。'
+              : 'Windows 通知已关闭。',
+            supported: windowsNotifier?.isSupported?.() ?? false,
           };
           storage.saveState();
         }
@@ -402,6 +463,7 @@ function registerIpc(ai, mailer) {
   });
 
   trustedHandle('monitor:check', async () => monitor.checkNow('manual'));
+  trustedHandle('monitor:replay', async (_event, hours) => monitor.replayNow(hours));
   trustedHandle('ai:test', async () => {
     try {
       const result = await ai.test();
@@ -431,6 +493,25 @@ function registerIpc(ai, mailer) {
       const message = safeError(error);
       saveMailConnection({ status: 'error', message, accepted: 0 });
       return { ok: false, message };
+    }
+  });
+  trustedHandle('windows-notification:test', async () => {
+    try {
+      const result = await windowsNotifier.test();
+      saveWindowsNotificationConnection({
+        status: 'connected',
+        message: 'Windows 测试通知已显示；点击通知可打开 Tibo Monitor。',
+        supported: true,
+      });
+      return result;
+    } catch (error) {
+      const message = safeError(error);
+      saveWindowsNotificationConnection({
+        status: 'error',
+        message,
+        supported: windowsNotifier?.isSupported?.() ?? false,
+      });
+      return { ok: false, message, code: error.code || null };
     }
   });
   trustedHandle('x:choose-firefox-executable', async () => {
@@ -597,7 +678,14 @@ async function bootstrap() {
     getPassword: () => storage.secrets.smtpPassword,
     log: (...args) => storage.log(...args),
   });
-  monitor = new MonitorService({ storage, source, ai, mailer });
+  windowsNotifier = new WindowsNotifier({
+    Notification,
+    ensureShortcut: ensureWindowsNotificationShortcut,
+    showWindow,
+    icon: assetPath('app-icon.png'),
+    log: (...args) => storage.log(...args),
+  });
+  monitor = new MonitorService({ storage, source, ai, mailer, windowsNotifier });
   monitor.on('update', (snapshot) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('monitor:update', snapshot);
   });
